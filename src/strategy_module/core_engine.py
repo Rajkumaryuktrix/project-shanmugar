@@ -6,8 +6,10 @@ import os
 from dotenv import load_dotenv
 import json
 
-from src.broker_module.upstox.data.CandleData import UpstoxHistoricalData
-from src.strategy_module.utils.strategy_tester import StrategyTester
+from ..broker_module.upstox.data.CandleData import UpstoxHistoricalData
+from ..broker_module.upstox.utils.InstrumentKeyFinder import InstrumentKeyFinder
+from .utils.strategy_tester import StrategyTester
+from .utils.strategy_optimizer import StrategyOptimizer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,11 +24,54 @@ class StrategyEngine:
     def __init__(self):
         """Initialize the strategy engine with required components."""
         self.candle_data = UpstoxHistoricalData()
+        self.instrument_finder = InstrumentKeyFinder()
         self.available_strategies = self._load_available_strategies()
         self.current_config = None
         self.current_results = None
         self.current_optimization_results = None
         
+        # Create results directory structure
+        self._initialize_results_directories()
+        
+    def _initialize_results_directories(self) -> None:
+        """Initialize the results directory structure."""
+        try:
+            # Get the base results directory
+            base_dir = os.path.join(os.path.dirname(__file__), 'results')
+            
+            # Create main results directory if it doesn't exist
+            os.makedirs(base_dir, exist_ok=True)
+            
+            # Create subdirectories for different types of results
+            backtest_dir = os.path.join(base_dir, 'backtest')
+            optimization_dir = os.path.join(base_dir, 'optimization')
+            
+            os.makedirs(backtest_dir, exist_ok=True)
+            os.makedirs(optimization_dir, exist_ok=True)
+            
+            # Initialize empty JSON files if they don't exist
+            json_files = [
+                'trades.json',
+                'metrics.json',
+                'statistics.json',
+                'recommendation.json',
+                'statistical_tests.json',
+                'config.json'
+            ]
+            
+            for directory in [backtest_dir, optimization_dir]:
+                for file_name in json_files:
+                    file_path = os.path.join(directory, file_name)
+                    if not os.path.exists(file_path):
+                        with open(file_path, 'w') as f:
+                            json.dump([], f, indent=4)
+            
+            logger.info("Results directory structure initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Error initializing results directories: {str(e)}")
+            raise
+    
     def _load_available_strategies(self) -> Dict[str, Dict]:
         """Load all available strategies from the strategies folder."""
         strategies = {}
@@ -121,7 +166,16 @@ class StrategyEngine:
             to_date (str, optional): End date in YYYY-MM-DD format (only for historical data type)
             
         Returns:
-            pd.DataFrame: Data with OHLCV columns
+            pd.DataFrame: Data with required columns:
+                - time: Timestamp
+                - open: Open price
+                - high: High price
+                - low: Low price
+                - close: Close price
+                - volume: Trading volume
+                - Signal: Trading signal (initialized as None)
+                - SL: Stop loss (initialized as None)
+                - TP: Take profit (initialized as None)
             
         Raises:
             ValueError: If data_type is invalid or required parameters are missing
@@ -153,6 +207,44 @@ class StrategyEngine:
             if data.empty:
                 raise ValueError("No data available for the specified parameters")
             
+            # Rename timestamp column to time if it exists
+            if 'timestamp' in data.columns:
+                data = data.rename(columns={'timestamp': 'time'})
+            elif 'datetime' in data.columns:
+                data = data.rename(columns={'datetime': 'time'})
+            elif 'date' in data.columns:
+                data = data.rename(columns={'date': 'time'})
+            
+            # Ensure all required columns are present
+            required_columns = ['time', 'open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(f"Data missing required columns: {missing_columns}")
+            
+            # Ensure time column is datetime
+            if not pd.api.types.is_datetime64_any_dtype(data['time']):
+                data['time'] = pd.to_datetime(data['time'])
+            
+            # Sort data by time
+            data = data.sort_values('time')
+            
+            # Initialize Signal, SL, and TP columns if not present
+            if 'Signal' not in data.columns:
+                data['Signal'] = None
+            if 'SL' not in data.columns:
+                data['SL'] = None
+            if 'TP' not in data.columns:
+                data['TP'] = None
+            
+            # Ensure all numeric columns are float
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            for col in numeric_columns:
+                data[col] = data[col].astype(float)
+            
+            # Reset index to ensure clean data
+            data = data.reset_index(drop=True)
+            
+            logger.info(f"Loaded data with {len(data)} rows and columns: {data.columns.tolist()}")
             return data
             
         except Exception as e:
@@ -167,10 +259,10 @@ class StrategyEngine:
                     # Backtesting parameters
                     forward_test: bool = True,
                     trade_engine_type: str = "Signals",
-                    investing_amount: float = 1000,
-                    account_leverage: float = 500,
-                    volume: float = 0.01,
-                    commission: float = 7,
+                    investing_amount: float = 1000.0,
+                    account_leverage: float = 500.0,
+                    volume: int = 1,
+                    commission: float = 7.0,
                     base_price: str = "close",
                     # Backward testing specific parameters
                     separate_close_signals: bool = False,
@@ -215,7 +307,7 @@ class StrategyEngine:
             trade_engine_type (str): Type of trade engine (Signals/SLTP)
             investing_amount (float): Initial account balance
             account_leverage (float): Account leverage
-            volume (float): Trading volume
+            volume (int): Trading volume
             commission (float): Commission per trade
             base_price (str): Base price column name
             
@@ -266,7 +358,7 @@ class StrategyEngine:
             strategy_class = self.available_strategies[strategy_name]['class']
             strategy = strategy_class(**strategy_params)
             
-            # Generate signals
+            # Generate signals using the strategy instance's method
             data_with_signals = strategy.generate_signals(data)
             if data_with_signals.empty:
                 raise ValueError("No signals generated")
@@ -276,7 +368,7 @@ class StrategyEngine:
                 ticker=tester_params.get('ticker', ''),
                 timeframe=tester_params.get('timeframe', ''),
                 testing_period_months=tester_params.get('testing_period_months', 3),
-                strategy=strategy,
+                strategy=strategy_class,  # Pass the strategy class, not the instance
                 strategy_params=strategy_params,
                 # Backtesting parameters
                 forward_test=forward_test,
@@ -319,10 +411,10 @@ class StrategyEngine:
                 data=data_with_signals
             )
             
-            # Run test and get results
+            # Get results from tester
             results = tester.get_test_results()
             
-            # Save results
+            # Store results
             self.current_results = results
             self.current_config = {
                 'strategy_name': strategy_name,
@@ -374,21 +466,25 @@ class StrategyEngine:
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             
-            # Store results in files
+            # Store results in files using tester's method
             output_dir = os.path.join(
                 os.path.dirname(__file__),
                 'results',
-                f'backtest_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                'backtest'
             )
-            os.makedirs(output_dir, exist_ok=True)
+            tester.store_test_results(output_dir)
             
-            # Save results to JSON files
-            with open(os.path.join(output_dir, 'backtest_results.json'), 'w') as f:
-                json.dump(results, f, indent=4)
-            
-            # Save configuration
-            with open(os.path.join(output_dir, 'config.json'), 'w') as f:
-                json.dump(self.current_config, f, indent=4)
+            # Store forward testing results if available
+            if forward_test and hasattr(tester, 'forward_test_results'):
+                forward_test_dir = os.path.join(
+                    os.path.dirname(__file__),
+                    'results',
+                    'forward_test'
+                )
+                os.makedirs(forward_test_dir, exist_ok=True)
+                
+                # Store forward test results
+                tester.store_test_results(forward_test_dir)
             
             logger.info(f"Results saved to {output_dir}")
             
@@ -396,105 +492,127 @@ class StrategyEngine:
             
         except Exception as e:
             logger.error(f"Error running strategy: {str(e)}")
+            # Create error results
+            error_results = {
+                'trades': [],
+                'metrics': [],
+                'statistics': [],
+                'recommendation': "Error in strategy execution",
+                'statistical_tests': {},
+                'error': str(e)
+            }
+            
+            # Store error results
+            self.current_results = error_results
+            self.current_config = {
+                'strategy_name': strategy_name,
+                'strategy_params': strategy_params,
+                'tester_params': tester_params,
+                'error': str(e),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # Store error results in files
+            try:
+                output_dir = os.path.join(
+                    os.path.dirname(__file__),
+                    'results',
+                    'backtest'
+                )
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Store error results in JSON files
+                error_file = os.path.join(output_dir, 'error_results.json')
+                with open(error_file, 'w') as f:
+                    json.dump(error_results, f, indent=4)
+                
+                error_config_file = os.path.join(output_dir, 'error_config.json')
+                with open(error_config_file, 'w') as f:
+                    json.dump(self.current_config, f, indent=4)
+                
+                logger.info(f"Error results saved to {output_dir}")
+            except Exception as store_error:
+                logger.error(f"Error storing error results: {str(store_error)}")
+            
             raise
     
     def optimize_strategy(self,
+                         ticker: str,
+                         strategy_class: Type,
+                         parameter_bounds: List[tuple],
                          data: pd.DataFrame,
-                         strategy_name: str,
-                         param_ranges: Dict[str, List],
-                         optimization_params: Dict) -> Dict:
-        """
-        Optimize strategy parameters using specified optimization method.
+                         criterion: str = "Balance_Max",
+                         timeframe: str = "5minute",
+                         trade_engine_type: str = "Signals",
+                         optimizing_period: int = 3,
+                         balance: float = 1000,
+                         leverage: float = 500,
+                         volume: int = 1,
+                         commission: float = 7,
+                         optimization_method: str = "grid_search",
+                         max_combinations: int = 1000) -> Dict:
+        """Run strategy optimization.
         
         Args:
-            data (pd.DataFrame): Historical data
-            strategy_name (str): Name of the strategy to optimize
-            param_ranges (Dict[str, List]): Parameter ranges for optimization
-            optimization_params (Dict): Optimization parameters including:
-                - method (str): Optimization method ('grid_search' or 'differential_evolution')
-                - criterion (str): Optimization criterion
-                - max_combinations (int): Maximum number of parameter combinations to test
-                - trade_engine_type (str): Type of trade engine
-                - balance (float): Initial account balance
-                - leverage (float): Account leverage
-                - volume (float): Trading volume
-                - commission (float): Commission per trade
-                
+            ticker: Trading symbol
+            strategy_class: Strategy class to optimize
+            parameter_bounds: List of tuples containing parameter bounds
+            data: Input DataFrame containing historical price data
+            criterion: Optimization criterion
+            timeframe: Trading timeframe
+            trade_engine_type: Type of trade engine
+            optimizing_period: Optimization period in months
+            balance: Initial account balance
+            leverage: Account leverage
+            volume: Trading volume
+            commission: Commission per trade
+            optimization_method: Method to use for optimization ('grid_search' or 'differential_evolution')
+            max_combinations: Maximum number of parameter combinations to test
+            
         Returns:
-            Dict: Optimization results including:
-                - optimization_results: All parameter combinations and their results
-                - best_parameters: Best parameter combination found
-                - best_result_metrics: Detailed metrics for best parameters
-                - config: Configuration used for optimization
+            Dict: Optimization results
         """
         try:
-            if strategy_name not in self.available_strategies:
-                raise ValueError(f"Strategy {strategy_name} not found")
-            
-            # Initialize strategy
-            strategy_class = self.available_strategies[strategy_name]['class']
-            
-            # Convert param_ranges to parameter_bounds format
-            parameter_bounds = []
-            for param_name, param_range in param_ranges.items():
-                if isinstance(param_range, (list, tuple)) and len(param_range) >= 2:
-                    parameter_bounds.append((param_range[0], param_range[-1]))
-                else:
-                    raise ValueError(f"Invalid parameter range for {param_name}")
-            
-            # Initialize optimizer with all parameters
-            from src.strategy_module.utils.strategy_optimizer import StrategyOptimizer
+            # Initialize optimizer
             optimizer = StrategyOptimizer(
-                ticker=optimization_params.get('ticker', ''),
+                ticker=ticker,
                 strategy_class=strategy_class,
                 parameter_bounds=parameter_bounds,
                 data=data,
-                criterion=optimization_params.get('criterion', 'Balance_Max'),
-                timeframe=optimization_params.get('timeframe', '5minute'),
-                trade_engine_type=optimization_params.get('trade_engine_type', 'Signals'),
-                optimizing_period=optimization_params.get('optimizing_period', 3),
-                balance=optimization_params.get('balance', 1000),
-                leverage=optimization_params.get('leverage', 500),
-                volume=optimization_params.get('volume', 1),
-                commission=optimization_params.get('commission', 7),
-                optimization_method=optimization_params.get('method', 'grid_search'),
-                max_combinations=optimization_params.get('max_combinations', 1000)
+                criterion=criterion,
+                timeframe=timeframe,
+                trade_engine_type=trade_engine_type,
+                optimizing_period=optimizing_period,
+                balance=balance,
+                leverage=leverage,
+                volume=volume,
+                commission=commission,
+                optimization_method=optimization_method,
+                max_combinations=max_combinations
             )
             
             # Run optimization
             optimizer.optimize_strategy()
             
+            # Get results
+            results_df = optimizer.get_optimization_results()
+            best_params = optimizer.get_best_parameters()
+            
             # Store results
+            optimizer.store_optimization_results()
+            
+            # Prepare return value
             results = {
-                'optimization_results': optimizer.get_optimization_results().to_dict('records'),
-                'best_parameters': optimizer.get_best_parameters(),
-                'best_result_metrics': optimizer.get_optimization_results().iloc[0].to_dict() if not optimizer.get_optimization_results().empty else None,
-                'config': {
-                    'strategy_name': strategy_name,
-                    'param_ranges': param_ranges,
-                    'optimization_params': optimization_params,
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
+                'best_params': best_params,
+                'performance': results_df.to_dict('records') if not results_df.empty else [],
+                'statistics': results_df.describe().to_dict() if not results_df.empty else {},
+                'recommendation': f"Best parameters found: {best_params}" if best_params else "No valid parameters found"
             }
-            
-            # Store results in files
-            output_dir = os.path.join(
-                os.path.dirname(__file__),
-                'results',
-                f'optimization_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-            )
-            optimizer.store_optimization_results(output_dir)
-            
-            # Update current state
-            self.current_optimization_results = results
-            self.current_config = results['config']
-            
-            logger.info(f"Optimization results saved to {output_dir}")
             
             return results
             
         except Exception as e:
-            logger.error(f"Error optimizing strategy: {str(e)}")
+            logger.error(f"Error in strategy optimization: {str(e)}")
             raise
     
     def get_available_strategies(self) -> Dict[str, Dict]:

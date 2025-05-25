@@ -28,10 +28,10 @@ class StrategyTester:
                  # Backtesting parameters
                  forward_test: bool = True,
                  trade_engine_type: str = "Signals",
-                 investing_amount: float = 1000,
-                 account_leverage: float = 500,
-                 volume: float = 0.01,
-                 commission: float = 7,
+                 investing_amount: float = 1000.0,
+                 account_leverage: float = 500.0,
+                 volume: int = 1,
+                 commission: float = 7.0,
                  base_price: str = "close",
                  # Backward testing specific parameters
                  separate_close_signals: bool = False,
@@ -267,6 +267,28 @@ class StrategyTester:
     def _execute_trades(self, input_data: pd.DataFrame) -> Dict:
         """Execute trades using the appropriate engine."""
         try:
+            # Ensure numeric columns are properly converted
+            numeric_columns = ['Price', 'SL', 'TP']
+            for col in numeric_columns:
+                if col in input_data.columns:
+                    input_data[col] = pd.to_numeric(input_data[col], errors='coerce')
+            
+            # Drop rows with NaN values in numeric columns
+            input_data = input_data.dropna(subset=numeric_columns)
+            
+            # Validate window parameters
+            if self.trade_engine_type == "SLTP":
+                # Ensure SL and TP are valid numeric values
+                if 'SL' in input_data.columns and 'TP' in input_data.columns:
+                    # Convert to absolute values to ensure positive numbers
+                    input_data['SL'] = input_data['SL'].abs()
+                    input_data['TP'] = input_data['TP'].abs()
+                    
+                    # Validate SL and TP values
+                    if (input_data['SL'] <= 0).any() or (input_data['TP'] <= 0).any():
+                        raise ValueError("Stop Loss and Take Profit values must be greater than 0")
+            
+            # Execute trades with the appropriate engine
             if self.trade_engine_type == "Signals":
                 results = self.trade_engine.signal_based_trade_executor(
                     input_data, self.balance, self.leverage, self.volume, self.commission
@@ -374,92 +396,108 @@ class StrategyTester:
         """Run forward testing with Monte Carlo simulation."""
         logger.info("Running forward testing...")
         
-        # Initialize forward testing with correct parameters
-        forward_tester = ForwardTesting(
-            data=self.data,
-            base_price=self.price
-        )
-        
-        # Generate future scenarios
-        forward_tester.generate_future_prices()
-        
-        # Get scenario statistics
-        self.forward_test_stats = forward_tester.get_all_scenarios_statistics()
-        
-        # Store forward testing results in a structured format
-        scenario_names = ['Bullish', 'Neutral', 'Bearish']
-        self.forward_test_results = {}
-        
-        # Initialize strategy with parameters
-        strategy_instance = self.strategy(**self.strategy_params)
-        
-        for i, scenario_name in enumerate(scenario_names):
-            try:
-                scenario_data = forward_tester.future_data_frames[i].copy()
-                
-                # Ensure required columns are present
-                required_columns = ['time', self.price]
-                if not all(col in scenario_data.columns for col in required_columns):
-                    logger.error(f"Missing required columns in scenario data: {required_columns}")
-                    continue
-                
-                # Generate signals for the scenario
-                signals = strategy_instance.generate_signals(scenario_data)
-                if signals is None or signals.empty:
-                    logger.warning(f"No signals generated for scenario {scenario_name}")
-                    continue
-                
-                # Execute trades for the scenario
-                if self.trade_engine_type == "Signals":
-                    input_data = signals[['time', self.price, 'Signal']].copy()
-                    input_data.columns = ['time', 'Price', 'Signal']
-                    results = self.trade_engine.signal_based_trade_executor(
-                        input_data, self.balance, self.leverage, self.volume, self.commission
-                    )
-                else:
-                    input_data = signals[['time', self.price, 'Signal', 'SL', 'TP']].copy()
-                    input_data.columns = ['time', 'Price', 'Signal', 'SL', 'TP']
-                    results = self.trade_engine.sltp_based_trade_executor(
-                        input_data, self.balance, self.leverage, self.volume, self.commission
-                    )
-                
-                # Calculate metrics and statistics for the scenario
-                if results['trades']:
-                    trades_df = pd.DataFrame(results['trades'])
-                    metrics_calculator = StrategyEvaluationMetrics(
-                        data=trades_df,
-                        balance=self.balance,
-                        ticker=self.ticker
-                    )
+        try:
+            # Initialize forward testing with correct parameters
+            forward_tester = ForwardTesting(
+                data=self.data,
+                base_price=self.price
+            )
+            
+            # Generate future scenarios
+            forward_tester.generate_future_prices()
+            
+            # Get scenario statistics
+            self.forward_test_stats = forward_tester.get_all_scenarios_statistics()
+            
+            # Store forward testing results in a structured format
+            scenario_names = ['Bullish', 'Neutral', 'Bearish']
+            self.forward_test_results = {}
+            
+            # Initialize strategy with parameters
+            strategy_instance = self.strategy(**self.strategy_params)
+            
+            for i, scenario_name in enumerate(scenario_names):
+                try:
+                    scenario_data = forward_tester.future_data_frames[i].copy()
                     
-                    self.forward_test_results[scenario_name] = {
-                        'metrics': metrics_calculator._calculate_evaluation_metrics(),
-                        'statistics': metrics_calculator._calculate_strategy_statistics(),
-                        'trades': results['trades']
-                    }
-                else:
+                    # Ensure required columns are present
+                    required_columns = ['time', self.price]
+                    if not all(col in scenario_data.columns for col in required_columns):
+                        raise ValueError(f"Missing required columns in scenario data: {required_columns}")
+                    
+                    # Generate signals for the scenario
+                    signals = strategy_instance.generate_signals(scenario_data)
+                    if signals is None or signals.empty:
+                        logger.warning(f"No signals generated for scenario {scenario_name}")
+                        self.forward_test_results[scenario_name] = {
+                            'metrics': pd.DataFrame(),
+                            'statistics': pd.DataFrame(),
+                            'trades': [],
+                            'error': "No signals generated"
+                        }
+                        continue
+                    
+                    # Execute trades for the scenario
+                    if self.trade_engine_type == "Signals":
+                        input_data = signals[['time', self.price, 'Signal']].copy()
+                        input_data.columns = ['time', 'Price', 'Signal']
+                        results = self.trade_engine.signal_based_trade_executor(
+                            input_data, self.balance, self.leverage, self.volume, self.commission
+                        )
+                    else:
+                        input_data = signals[['time', self.price, 'Signal', 'SL', 'TP']].copy()
+                        input_data.columns = ['time', 'Price', 'Signal', 'SL', 'TP']
+                        results = self.trade_engine.sltp_based_trade_executor(
+                            input_data, self.balance, self.leverage, self.volume, self.commission
+                        )
+                    
+                    # Calculate metrics and statistics for the scenario
+                    if results['trades']:
+                        trades_df = pd.DataFrame(results['trades'])
+                        metrics_calculator = StrategyEvaluationMetrics(
+                            data=trades_df,
+                            balance=self.balance,
+                            ticker=self.ticker
+                        )
+                        
+                        self.forward_test_results[scenario_name] = {
+                            'metrics': metrics_calculator._calculate_evaluation_metrics(),
+                            'statistics': metrics_calculator._calculate_strategy_statistics(),
+                            'trades': results['trades']
+                        }
+                    else:
+                        self.forward_test_results[scenario_name] = {
+                            'metrics': pd.DataFrame(),
+                            'statistics': pd.DataFrame(),
+                            'trades': [],
+                            'error': "No trades executed"
+                        }
+                        
+                except Exception as e:
+                    logger.error(f"Error processing scenario {scenario_name}: {str(e)}")
                     self.forward_test_results[scenario_name] = {
                         'metrics': pd.DataFrame(),
                         'statistics': pd.DataFrame(),
-                        'trades': []
+                        'trades': [],
+                        'error': str(e)
                     }
-                    
+            
+            # Plot scenarios
+            try:
+                forward_tester.plot_all_scenarios()
             except Exception as e:
-                logger.error(f"Error processing scenario {scenario_name}: {str(e)}")
-                self.forward_test_results[scenario_name] = {
-                    'metrics': pd.DataFrame(),
-                    'statistics': pd.DataFrame(),
-                    'trades': [],
-                    'error': str(e)
-                }
-        
-        # Plot scenarios
-        try:
-            forward_tester.plot_all_scenarios()
+                logger.error(f"Error plotting scenarios: {str(e)}")
+                # Don't raise the error as plotting is not critical
+            
+            logger.info("Forward testing completed")
+            
         except Exception as e:
-            logger.error(f"Error plotting scenarios: {str(e)}")
-        
-        logger.info("Forward testing completed")
+            logger.error(f"Error in forward testing: {str(e)}")
+            self.forward_test_results = {
+                'error': str(e),
+                'details': "Forward testing failed"
+            }
+            # Don't raise the error, just log it and continue
 
     def get_test_results(self, include_forward_test: bool = True) -> Dict:
         """Get test results in a structured format."""
@@ -472,58 +510,12 @@ class StrategyTester:
                 'metrics': self.metrics.to_dict('records') if self.metrics is not None and not self.metrics.empty else [],
                 'statistics': self.stats.to_dict('records') if self.stats is not None and not self.stats.empty else [],
                 'recommendation': self.final_recommendation if hasattr(self, 'final_recommendation') else "No recommendation available",
-                'statistical_tests': {}
+                'statistical_tests': self.run_statistical_tests() if hasattr(self, 'run_statistical_tests') else {}
             }
-            
-            # Add statistical test results if available
-            if hasattr(self, 'ljung_box_results') and self.ljung_box_results is not None:
-                try:
-                    results['statistical_tests']['ljung_box_results'] = {
-                        'test_statistic': float(self.ljung_box_results[0]),
-                        'p_value': float(self.ljung_box_results[1]['lb_pvalue'][-1]),
-                        'interpretation': 'Significant autocorrelation detected' if self.ljung_box_results[1]['lb_pvalue'][-1] < self.significance_level else 'No significant autocorrelation'
-                    }
-                except (KeyError, IndexError, TypeError) as e:
-                    logger.warning(f"Error processing Ljung-Box results: {str(e)}")
-            
-            if hasattr(self, 'jarque_bera_results') and self.jarque_bera_results is not None:
-                try:
-                    results['statistical_tests']['jarque_bera_results'] = {
-                        'test_statistic': float(self.jarque_bera_results[0]),
-                        'p_value': float(self.jarque_bera_results[1]),
-                        'interpretation': 'Returns are not normally distributed' if self.jarque_bera_results[1] < self.significance_level else 'Returns may be normally distributed'
-                    }
-                except (KeyError, IndexError, TypeError) as e:
-                    logger.warning(f"Error processing Jarque-Bera results: {str(e)}")
-            
-            if hasattr(self, 'hurst_exponent') and self.hurst_exponent is not None:
-                try:
-                    results['statistical_tests']['hurst_exponent'] = {
-                        'value': float(self.hurst_exponent),
-                        'interpretation': 'Trending behavior' if self.hurst_exponent > 0.5 else 'Mean-reverting behavior' if self.hurst_exponent < 0.5 else 'Random walk behavior'
-                    }
-                except (KeyError, IndexError, TypeError) as e:
-                    logger.warning(f"Error processing Hurst exponent: {str(e)}")
-            
-            if hasattr(self, 'auto_corr') and hasattr(self, 'cross_corr') and self.auto_corr is not None and self.cross_corr is not None:
-                try:
-                    results['statistical_tests']['correlation_analysis'] = {
-                        'auto_corr_max': float(np.max(self.auto_corr)),
-                        'auto_corr_lag': int(np.argmax(self.auto_corr)),
-                        'cross_corr_max': float(np.max(self.cross_corr)),
-                        'cross_corr_lag': int(np.argmax(self.cross_corr)),
-                        'plot_file': os.path.join(os.path.dirname(__file__), '..', '..', '..', 'plots', f'correlations_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
-                    }
-                except (KeyError, IndexError, TypeError) as e:
-                    logger.warning(f"Error processing correlation analysis: {str(e)}")
             
             # Add forward test results if available and requested
             if include_forward_test and hasattr(self, 'forward_test_results') and self.forward_test_results is not None:
-                try:
-                    results['forward_test'] = self.forward_test_results
-                    logger.info("Forward test results included")
-                except Exception as e:
-                    logger.warning(f"Error processing forward test results: {str(e)}")
+                results['forward_test'] = self.forward_test_results
             
             # Log results structure
             logger.info("Test results structure:")
@@ -544,7 +536,8 @@ class StrategyTester:
                 'metrics': [],
                 'statistics': [],
                 'recommendation': "Error generating results",
-                'statistical_tests': {}
+                'statistical_tests': {},
+                'error': str(e)
             }
 
     def run_statistical_tests(self) -> Dict:
@@ -562,61 +555,94 @@ class StrategyTester:
             'correlation_analysis': {}
         }
         
-        if self.trades.empty:
-            logger.warning("No trades available for statistical testing")
+        try:
+            if self.trades.empty:
+                logger.warning("No trades available for statistical testing")
+                return results
+                
+            # Get returns series
+            if 'PnL' not in self.trades.columns:
+                logger.warning("PnL column not found in trades data")
+                return results
+                
+            returns = self.trades['PnL'].values
+            
+            if len(returns) == 0:
+                logger.warning("No valid returns data for statistical testing")
+                return results
+            
+            # Run Ljung-Box test for autocorrelation
+            try:
+                self.ljung_box_results = self.statistical_tester.ljung_box_test(returns)
+                if self.ljung_box_results is not None:
+                    results['ljung_box'] = {
+                        'test_statistic': float(self.ljung_box_results[0]),
+                        'p_value': float(self.ljung_box_results[1]['lb_pvalue'][-1]),
+                        'interpretation': 'Significant autocorrelation detected' if self.ljung_box_results[1]['lb_pvalue'][-1] < self.significance_level else 'No significant autocorrelation'
+                    }
+            except Exception as e:
+                logger.error(f"Error in Ljung-Box test: {str(e)}")
+                results['ljung_box'] = {'error': str(e)}
+            
+            # Run Jarque-Bera test for normality
+            try:
+                self.jarque_bera_results = self.statistical_tester.jarque_bera_test(returns)
+                if self.jarque_bera_results is not None:
+                    results['jarque_bera'] = {
+                        'test_statistic': float(self.jarque_bera_results[0]),
+                        'p_value': float(self.jarque_bera_results[1]),
+                        'interpretation': 'Returns are not normally distributed' if self.jarque_bera_results[1] < self.significance_level else 'Returns may be normally distributed'
+                    }
+            except Exception as e:
+                logger.error(f"Error in Jarque-Bera test: {str(e)}")
+                results['jarque_bera'] = {'error': str(e)}
+            
+            # Calculate Hurst exponent
+            try:
+                self.hurst_exponent = self.statistical_tester.hurst_exponent(returns)
+                if self.hurst_exponent is not None:
+                    results['hurst_exponent'] = {
+                        'value': float(self.hurst_exponent),
+                        'interpretation': 'Trending behavior' if self.hurst_exponent > 0.5 else 'Mean-reverting behavior' if self.hurst_exponent < 0.5 else 'Random walk behavior'
+                    }
+            except Exception as e:
+                logger.error(f"Error calculating Hurst exponent: {str(e)}")
+                results['hurst_exponent'] = {'error': str(e)}
+            
+            # Calculate correlations
+            try:
+                if self.price in self.data.columns:
+                    self.auto_corr, self.cross_corr = self.statistical_tester.calculate_correlations(
+                        returns, self.data[self.price].values
+                    )
+                    if self.auto_corr is not None and self.cross_corr is not None:
+                        results['correlation_analysis'] = {
+                            'auto_corr_max': float(np.max(self.auto_corr)),
+                            'auto_corr_lag': int(np.argmax(self.auto_corr)),
+                            'cross_corr_max': float(np.max(self.cross_corr)),
+                            'cross_corr_lag': int(np.argmax(self.cross_corr)),
+                            'plot_file': os.path.join(os.path.dirname(__file__), '..', '..', '..', 'plots', f'correlations_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+                        }
+            except Exception as e:
+                logger.error(f"Error in correlation analysis: {str(e)}")
+                results['correlation_analysis'] = {'error': str(e)}
+            
+            logger.info("Statistical testing completed")
             return results
             
-        # Get returns series
-        returns = self.trades['PnL'].values
-        
-        # Run Ljung-Box test for autocorrelation
-        self.ljung_box_results = self.statistical_tester.ljung_box_test(returns)
-        if self.ljung_box_results is not None:
-            results['ljung_box'] = {
-                'test_statistic': float(self.ljung_box_results[0]),
-                'p_value': float(self.ljung_box_results[1]['lb_pvalue'][-1]),
-                'interpretation': 'Significant autocorrelation detected' if self.ljung_box_results[1]['lb_pvalue'][-1] < self.significance_level else 'No significant autocorrelation'
-            }
-        
-        # Run Jarque-Bera test for normality
-        self.jarque_bera_results = self.statistical_tester.jarque_bera_test(returns)
-        if self.jarque_bera_results is not None:
-            results['jarque_bera'] = {
-                'test_statistic': float(self.jarque_bera_results[0]),
-                'p_value': float(self.jarque_bera_results[1]),
-                'interpretation': 'Returns are not normally distributed' if self.jarque_bera_results[1] < self.significance_level else 'Returns may be normally distributed'
-            }
-        
-        # Calculate Hurst exponent
-        self.hurst_exponent = self.statistical_tester.hurst_exponent(returns)
-        if self.hurst_exponent is not None:
-            results['hurst_exponent'] = {
-                'value': float(self.hurst_exponent),
-                'interpretation': 'Trending behavior' if self.hurst_exponent > 0.5 else 'Mean-reverting behavior' if self.hurst_exponent < 0.5 else 'Random walk behavior'
-            }
-        
-        # Calculate correlations
-        self.auto_corr, self.cross_corr = self.statistical_tester.calculate_correlations(
-            returns, self.data[self.price].values
-        )
-        if self.auto_corr is not None and self.cross_corr is not None:
-            results['correlation_analysis'] = {
-                'auto_corr_max': float(np.max(self.auto_corr)),
-                'auto_corr_lag': int(np.argmax(self.auto_corr)),
-                'cross_corr_max': float(np.max(self.cross_corr)),
-                'cross_corr_lag': int(np.argmax(self.cross_corr)),
-                'plot_file': os.path.join(os.path.dirname(__file__), '..', '..', '..', 'plots', f'correlations_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
-            }
-        
-        logger.info("Statistical testing completed")
-        return results
+        except Exception as e:
+            logger.error(f"Error in statistical testing: {str(e)}")
+            return results
 
-    def store_test_results(self, output_dir: str = None) -> None:
-        """Store test results in separate JSON files.
+    def store_test_results(self, output_dir: str = None) -> Dict:
+        """Store test results in JSON files with test_id as primary key.
         
         Args:
             output_dir (str, optional): Directory to store the JSON files. 
                                       If None, uses a default directory.
+        
+        Returns:
+            Dict: The test results that were stored
         """
         logger.info("Storing test results...")
         
@@ -627,52 +653,136 @@ class StrategyTester:
                     os.path.dirname(__file__),
                     '..',
                     'results',
-                    f'test_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                    'backtest'
                 )
             
             # Create directory if it doesn't exist
             os.makedirs(output_dir, exist_ok=True)
             
+            # Generate unique test ID with strategy name and symbol
+            strategy_name = self.strategy.__name__ if hasattr(self.strategy, '__name__') else str(self.strategy)
+            symbol = self.ticker.split('|')[0] if '|' in self.ticker else self.ticker
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            test_id = f"{strategy_name}_{symbol}_{timestamp}"
+            
             # Get all test results
             results = self.get_test_results()
-            stats_results = self.run_statistical_tests()
             
-            # Store trades
+            # Function to serialize data
+            def serialize_data(data):
+                """Serialize data to JSON-compatible format."""
+                if isinstance(data, (datetime, pd.Timestamp)):
+                    return data.isoformat()
+                if isinstance(data, pd.DataFrame):
+                    return data.to_dict(orient='records')
+                if isinstance(data, pd.Series):
+                    return data.to_dict()
+                if isinstance(data, np.ndarray):
+                    return data.tolist()
+                if isinstance(data, np.integer):
+                    return int(data)
+                if isinstance(data, np.floating):
+                    return float(data)
+                if isinstance(data, dict):
+                    return {k: serialize_data(v) for k, v in data.items()}
+                if isinstance(data, list):
+                    return [serialize_data(item) for item in data]
+                return data
+            
+            # Function to store data with test_id as primary key
+            def store_data(file_path: str, data: Dict, test_id: str) -> None:
+                try:
+                    # Serialize data
+                    serialized_data = serialize_data(data)
+                    
+                    # Create data structure with test_id as primary key
+                    data_entry = {
+                        test_id: {
+                            'data': serialized_data,
+                            'metadata': {
+                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'ticker': self.ticker,
+                                'timeframe': self.timeframe,
+                                'strategy_name': strategy_name
+                            }
+                        }
+                    }
+                    
+                    # Read existing data
+                    if os.path.exists(file_path):
+                        with open(file_path, 'r') as f:
+                            try:
+                                existing_data = json.load(f)
+                            except json.JSONDecodeError:
+                                existing_data = {}
+                    else:
+                        existing_data = {}
+                    
+                    # Update existing data with new entry
+                    existing_data.update(data_entry)
+                    
+                    # Write back to file
+                    with open(file_path, 'w') as f:
+                        json.dump(existing_data, f, indent=4)
+                        
+                    logger.info(f"Successfully stored data in {file_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Error storing data in {file_path}: {str(e)}")
+                    # If error occurs, write new data as single entry
+                    try:
+                        with open(file_path, 'w') as f:
+                            json.dump(data_entry, f, indent=4)
+                        logger.info(f"Created new file {file_path} with single entry")
+                    except Exception as write_error:
+                        logger.error(f"Error writing to {file_path}: {str(write_error)}")
+            
+            # Store trades with test_id as primary key
             trades_file = os.path.join(output_dir, 'trades.json')
-            with open(trades_file, 'w') as f:
-                json.dump(results['trades'], f, indent=4)
-            logger.info(f"Trades stored in {trades_file}")
+            store_data(trades_file, results['trades'], test_id)
             
-            # Store metrics
+            # Store metrics with test_id as primary key
             metrics_file = os.path.join(output_dir, 'metrics.json')
-            with open(metrics_file, 'w') as f:
-                json.dump(results['metrics'], f, indent=4)
-            logger.info(f"Metrics stored in {metrics_file}")
+            store_data(metrics_file, results['metrics'], test_id)
             
-            # Store statistics
+            # Store statistics with test_id as primary key
             stats_file = os.path.join(output_dir, 'statistics.json')
-            with open(stats_file, 'w') as f:
-                json.dump(results['statistics'], f, indent=4)
-            logger.info(f"Statistics stored in {stats_file}")
+            store_data(stats_file, results['statistics'], test_id)
             
-            # Store recommendation
+            # Store recommendation with test_id as primary key
             recommendation_file = os.path.join(output_dir, 'recommendation.json')
-            with open(recommendation_file, 'w') as f:
-                json.dump({'recommendation': results['recommendation']}, f, indent=4)
-            logger.info(f"Recommendation stored in {recommendation_file}")
+            store_data(recommendation_file, {'recommendation': results['recommendation']}, test_id)
             
-            # Store statistical test results
+            # Store statistical test results with test_id as primary key
             stats_tests_file = os.path.join(output_dir, 'statistical_tests.json')
-            with open(stats_tests_file, 'w') as f:
-                json.dump(stats_results, f, indent=4)
-            logger.info(f"Statistical test results stored in {stats_tests_file}")
+            store_data(stats_tests_file, results['statistical_tests'], test_id)
             
-            # Store configuration
+            # Store configuration with test_id as primary key
             config_file = os.path.join(output_dir, 'config.json')
+            
+            # Parse timeframe to get unit and interval correctly
+            timeframe = self.timeframe.lower()
+            if 'minute' in timeframe:
+                unit = 'minutes'
+                interval = int(timeframe.split('minute')[0])
+            elif 'hour' in timeframe:
+                unit = 'hours'
+                interval = int(timeframe.split('hour')[0])
+            elif 'day' in timeframe:
+                unit = 'days'
+                interval = int(timeframe.split('day')[0])
+            else:
+                unit = 'days'  # default
+                interval = 1
+            
             config = {
-                'ticker': self.ticker,
-                'timeframe': self.timeframe,
-                'testing_period_months': self.testing_period_months,
+                'data_loading_params': {
+                    'instrument_key': self.ticker,
+                    'unit': unit,  # Store just the unit (minutes, hours, days)
+                    'interval': interval,  # Store just the number
+                    'data_type': 'historical',
+                    'days': self.testing_period_months * 30  # Convert months to days
+                },
                 'strategy_params': self.strategy_params,
                 'backtesting_params': {
                     'forward_test': self.forward_test,
@@ -716,14 +826,76 @@ class StrategyTester:
                 'data_validation_params': {
                     'required_columns': self.required_columns,
                     'data_validation': self.data_validation
-                },
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
             }
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=4)
-            logger.info(f"Configuration stored in {config_file}")
+            store_data(config_file, config, test_id)
             
-            logger.info(f"All test results stored in {output_dir}")
+            # Store test index with test_id as primary key
+            index_file = os.path.join(output_dir, 'test_index.json')
+            index_entry = {
+                'summary': {
+                    'total_trades': len(results['trades']),
+                    'recommendation': results['recommendation']
+                }
+            }
+            store_data(index_file, index_entry, test_id)
+            
+            # Store forward testing results if available
+            if self.forward_test and hasattr(self, 'forward_test_results'):
+                forward_test_dir = os.path.join(
+                    os.path.dirname(__file__),
+                    '..',
+                    'results',
+                    'forward_test'
+                )
+                os.makedirs(forward_test_dir, exist_ok=True)
+                
+                # Store forward test results for each scenario
+                for scenario_name, scenario_results in self.forward_test_results.items():
+                    if isinstance(scenario_results, dict) and 'error' not in scenario_results:
+                        # Store scenario trades
+                        if 'trades' in scenario_results:
+                            trades_file = os.path.join(forward_test_dir, f'trades_{scenario_name.lower()}.json')
+                            store_data(trades_file, scenario_results['trades'], test_id)
+                        
+                        # Store scenario metrics
+                        if 'metrics' in scenario_results:
+                            metrics_file = os.path.join(forward_test_dir, f'metrics_{scenario_name.lower()}.json')
+                            store_data(metrics_file, scenario_results['metrics'], test_id)
+                        
+                        # Store scenario statistics
+                        if 'statistics' in scenario_results:
+                            stats_file = os.path.join(forward_test_dir, f'statistics_{scenario_name.lower()}.json')
+                            # Ensure statistics data is not null
+                            if scenario_results['statistics'] is not None and not scenario_results['statistics'].empty:
+                                store_data(stats_file, scenario_results['statistics'], test_id)
+                            else:
+                                logger.warning(f"No statistics data available for {scenario_name} scenario")
+                
+                # Store forward test configuration
+                forward_config_file = os.path.join(forward_test_dir, 'config.json')
+                forward_config = {
+                    'scenarios': list(self.forward_test_results.keys()),
+                    'monte_carlo_simulations': self.monte_carlo_simulations,
+                    'confidence_level': self.confidence_level,
+                    'strategy_params': self.strategy_params
+                }
+                store_data(forward_config_file, forward_config, test_id)
+                
+                # Store forward test index
+                forward_index_file = os.path.join(forward_test_dir, 'test_index.json')
+                forward_index_entry = {
+                    'scenarios': list(self.forward_test_results.keys()),
+                    'summary': {
+                        'monte_carlo_simulations': self.monte_carlo_simulations,
+                        'confidence_level': self.confidence_level
+                    }
+                }
+                store_data(forward_index_file, forward_index_entry, test_id)
+            
+            logger.info(f"All test results stored with test_id: {test_id}")
+            
+            return results
             
         except Exception as e:
             logger.error(f"Error storing test results: {str(e)}")

@@ -1,0 +1,3 @@
+"""
+Shanmugaa - Algorithmic Trading Project
+""" 

@@ -1,15 +1,16 @@
-import numpy as np
-import pandas as pd
-from typing import List, Dict, Optional, Type, Any, Tuple
-from itertools import product
-from datetime import datetime, timedelta
 import logging
+from typing import Dict, List, Optional, Tuple, Type
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+import json
+
+from ...broker_module.upstox.data.CandleData import UpstoxHistoricalData
+from itertools import product
 from scipy.optimize import differential_evolution
 from .backward_testing import BacktestingTradeEngine
 from .strategy_evaluation_metrics import StrategyEvaluationMetrics
-from src.broker_module.upstox.data.CandleData import UpstoxHistoricalData
-import os
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class StrategyOptimizer:
                  optimizing_period: int = 3,
                  balance: float = 1000,
                  leverage: float = 500,
-                 volume: float = 1,
+                 volume: int = 1,
                  commission: float = 7,
                  optimization_method: str = "grid_search",
                  max_combinations: int = 1000):
@@ -719,77 +720,267 @@ class StrategyOptimizer:
                     os.path.dirname(__file__),
                     '..',
                     'results',
-                    f'optimization_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                    'optimization'
                 )
             
             # Create directory if it doesn't exist
             os.makedirs(output_dir, exist_ok=True)
             
+            # Generate unique test ID with strategy name and symbol
+            strategy_name = self._strategy_class.__name__ if hasattr(self._strategy_class, '__name__') else str(self._strategy_class)
+            symbol = self._ticker.split('|')[0] if '|' in self._ticker else self._ticker
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            test_id = f"{strategy_name}_{symbol}_{timestamp}"
+            
             # Get optimization results
             results_df = self.get_optimization_results()
             
-            # Store all optimization results
-            results_file = os.path.join(output_dir, 'optimization_results.json')
-            with open(results_file, 'w') as f:
-                json.dump(results_df.to_dict('records'), f, indent=4)
-            logger.info(f"Optimization results stored in {results_file}")
+            # Function to serialize data
+            def serialize_data(data):
+                """Serialize data to JSON-compatible format."""
+                if isinstance(data, (datetime, pd.Timestamp)):
+                    return data.isoformat()
+                if isinstance(data, pd.DataFrame):
+                    return data.to_dict(orient='records')
+                if isinstance(data, pd.Series):
+                    return data.to_dict()
+                if isinstance(data, np.ndarray):
+                    return data.tolist()
+                if isinstance(data, np.integer):
+                    return int(data)
+                if isinstance(data, np.floating):
+                    return float(data)
+                if isinstance(data, dict):
+                    return {k: serialize_data(v) for k, v in data.items()}
+                if isinstance(data, list):
+                    return [serialize_data(item) for item in data]
+                return data
+            
+            # Function to store data with test_id as primary key
+            def store_data(file_path: str, data: Dict, test_id: str) -> None:
+                try:
+                    # Serialize data
+                    serialized_data = serialize_data(data)
+                    
+                    # Create data structure with test_id as primary key
+                    data_entry = {
+                        test_id: {
+                            'data': serialized_data,
+                            'metadata': {
+                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'ticker': self._ticker,
+                                'timeframe': self._timeframe,
+                                'strategy_name': strategy_name
+                            }
+                        }
+                    }
+                    
+                    # Read existing data
+                    if os.path.exists(file_path):
+                        with open(file_path, 'r') as f:
+                            try:
+                                existing_data = json.load(f)
+                            except json.JSONDecodeError:
+                                existing_data = {}
+                    else:
+                        existing_data = {}
+                    
+                    # Update existing data with new entry
+                    existing_data.update(data_entry)
+                    
+                    # Write back to file
+                    with open(file_path, 'w') as f:
+                        json.dump(existing_data, f, indent=4)
+                        
+                    logger.info(f"Successfully stored data in {file_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Error storing data in {file_path}: {str(e)}")
+                    # If error occurs, write new data as single entry
+                    try:
+                        with open(file_path, 'w') as f:
+                            json.dump(data_entry, f, indent=4)
+                        logger.info(f"Created new file {file_path} with single entry")
+                    except Exception as write_error:
+                        logger.error(f"Error writing to {file_path}: {str(write_error)}")
+            
+            # Store optimization results
+            results_file = os.path.join(output_dir, 'results.json')
+            store_data(results_file, results_df.to_dict('records'), test_id)
             
             # Store best parameters
             best_params = self.get_best_parameters()
             if best_params is not None:
                 best_params_file = os.path.join(output_dir, 'best_parameters.json')
-                with open(best_params_file, 'w') as f:
-                    json.dump({
-                        'parameters': best_params,
-                        'criterion': self._criterion,
-                        'best_value': float(results_df[self._criterion].iloc[0]) if not results_df.empty else None
-                    }, f, indent=4)
-                logger.info(f"Best parameters stored in {best_params_file}")
+                store_data(best_params_file, {
+                    'parameters': best_params,
+                    'criterion': self._criterion,
+                    'best_value': float(results_df[self._criterion].iloc[0]) if not results_df.empty else None
+                }, test_id)
             
             # Store configuration
             config_file = os.path.join(output_dir, 'config.json')
             config = {
-                'ticker': self._ticker,
-                'timeframe': self._timeframe,
-                'optimizing_period': self._optimizing_period,
-                'optimization_method': self._optimization_method,
-                'criterion': self._criterion,
-                'max_combinations': self._max_combinations,
-                'trade_engine_params': {
+                'data_loading_params': {
+                    'instrument_key': self._ticker,
+                    'unit': self._timeframe.replace(str(self._timeframe.split('minute')[0]), '').strip() if 'minute' in self._timeframe else 'days',
+                    'interval': int(self._timeframe.split('minute')[0]) if 'minute' in self._timeframe else 1,
+                    'data_type': 'historical',
+                    'days': self._optimizing_period * 30  # Convert months to days
+                },
+                'strategy_params': {
+                    'parameter_bounds': self._parameter_bounds
+                },
+                'optimization_params': {
+                    'criterion': self._criterion,
+                    'optimization_method': self._optimization_method,
+                    'max_combinations': self._max_combinations
+                },
+                'backtesting_params': {
                     'trade_engine_type': self._trade_engine_type,
-                    'balance': self._balance,
-                    'leverage': self._leverage,
+                    'investing_amount': self._balance,
+                    'account_leverage': self._leverage,
                     'volume': self._volume,
                     'commission': self._commission
                 },
-                'parameter_bounds': self._parameter_bounds,
-                'data_info': {
-                    'rows': len(self.data),
-                    'start_date': self.data['time'].min().strftime('%Y-%m-%d %H:%M:%S'),
-                    'end_date': self.data['time'].max().strftime('%Y-%m-%d %H:%M:%S'),
-                    'columns': list(self.data.columns)
-                },
-                'optimization_stats': {
+                'data_validation_params': {
+                    'required_columns': ['time', 'open', 'high', 'low', 'close', 'volume'],
+                    'data_validation': True
+                }
+            }
+            store_data(config_file, config, test_id)
+            
+            # Store test index
+            index_file = os.path.join(output_dir, 'test_index.json')
+            index_entry = {
+                'summary': {
                     'total_combinations_tested': len(results_df) if not results_df.empty else 0,
                     'best_criterion_value': float(results_df[self._criterion].iloc[0]) if not results_df.empty else None,
                     'generations_completed': self._generation_count if hasattr(self, '_generation_count') else None
-                },
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
             }
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=4)
-            logger.info(f"Configuration stored in {config_file}")
+            store_data(index_file, index_entry, test_id)
             
-            # Store detailed metrics for best parameters
-            if not results_df.empty:
-                best_result = results_df.iloc[0].to_dict()
-                metrics_file = os.path.join(output_dir, 'best_result_metrics.json')
-                with open(metrics_file, 'w') as f:
-                    json.dump(best_result, f, indent=4)
-                logger.info(f"Best result metrics stored in {metrics_file}")
-            
-            logger.info(f"All optimization results stored in {output_dir}")
+            logger.info(f"All optimization results stored with test_id: {test_id}")
             
         except Exception as e:
             logger.error(f"Error storing optimization results: {str(e)}")
             raise 
+
+    @classmethod
+    def load_config(cls, test_id: str, output_dir: str = None) -> Optional[Dict]:
+        """Load a saved configuration by test ID.
+        
+        Args:
+            test_id (str): Test ID to load
+            output_dir (str, optional): Directory containing the configuration files.
+                                      If None, uses the default directory.
+        
+        Returns:
+            Optional[Dict]: Loaded configuration if found, None otherwise
+        """
+        logger.info(f"Loading configuration for test_id: {test_id}")
+        
+        try:
+            # Create output directory if not provided
+            if output_dir is None:
+                output_dir = os.path.join(
+                    os.path.dirname(__file__),
+                    '..',
+                    'results',
+                    'optimization'
+                )
+            
+            # Load config file
+            config_file = os.path.join(output_dir, 'config.json')
+            if not os.path.exists(config_file):
+                logger.warning(f"Config file not found: {config_file}")
+                return None
+            
+            with open(config_file, 'r') as f:
+                configs = json.load(f)
+                
+                if test_id not in configs:
+                    logger.warning(f"Test ID {test_id} not found in config file")
+                    return None
+                
+                config = configs[test_id]
+                
+                # Extract data and metadata
+                data = config.get('data', {})
+                metadata = config.get('metadata', {})
+                
+                # Validate required fields
+                required_fields = ['data_loading_params', 'strategy_params', 'optimization_params']
+                missing_fields = [field for field in required_fields if field not in data]
+                if missing_fields:
+                    logger.warning(f"Missing required fields in config: {missing_fields}")
+                    return None
+                
+                # Create a complete configuration dictionary
+                complete_config = {
+                    'data': data,
+                    'metadata': metadata
+                }
+                
+                logger.info(f"Successfully loaded configuration for test_id: {test_id}")
+                return complete_config
+                
+        except Exception as e:
+            logger.error(f"Error loading configuration: {str(e)}")
+            return None
+
+    @classmethod
+    def load_saved_configs(cls, output_dir: str = None) -> List[Dict]:
+        """Load all saved configurations.
+        
+        Args:
+            output_dir (str, optional): Directory containing the configuration files.
+                                      If None, uses the default directory.
+        
+        Returns:
+            List[Dict]: List of saved configurations
+        """
+        logger.info("Loading saved configurations...")
+        
+        try:
+            # Create output directory if not provided
+            if output_dir is None:
+                output_dir = os.path.join(
+                    os.path.dirname(__file__),
+                    '..',
+                    'results',
+                    'optimization'
+                )
+            
+            # Load config file
+            config_file = os.path.join(output_dir, 'config.json')
+            if not os.path.exists(config_file):
+                logger.warning(f"Config file not found: {config_file}")
+                return []
+            
+            with open(config_file, 'r') as f:
+                configs = json.load(f)
+                
+                # Convert dict of configs to list
+                config_list = []
+                for test_id, config in configs.items():
+                    # Create a flattened configuration with test_id
+                    flat_config = {
+                        'test_id': test_id,
+                        **config
+                    }
+                    config_list.append(flat_config)
+                
+                # Sort configs by timestamp
+                config_list.sort(
+                    key=lambda x: x.get('metadata', {}).get('timestamp', ''),
+                    reverse=True
+                )
+                
+                logger.info(f"Loaded {len(config_list)} configurations")
+                return config_list
+                
+        except Exception as e:
+            logger.error(f"Error loading saved configurations: {str(e)}")
+            return [] 

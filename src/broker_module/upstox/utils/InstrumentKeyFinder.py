@@ -23,7 +23,9 @@ class InstrumentKeyFinder:
         if instruments_file is None:
             # Get the absolute path to the instruments file
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            self.instruments_file = os.path.join(current_dir, 'instruments', 'active_instruments.json')
+            # Go up one level from utils to upstox directory
+            upstox_dir = os.path.dirname(current_dir)
+            self.instruments_file = os.path.join(upstox_dir, 'instruments', 'active_instruments.json')
         else:
             self.instruments_file = instruments_file
             

@@ -19,7 +19,7 @@ class TradeMetrics:
     trade_type: str
     open_time: pd.Timestamp
     close_time: Optional[pd.Timestamp]
-    volume: float
+    volume: int
     open_price: float
     close_price: Optional[float]
     pnl: Optional[float]
@@ -68,7 +68,7 @@ class BacktestingTradeEngine:
 
     @staticmethod
     @jit(nopython=True)
-    def _calculate_trade_metrics(open_price: float, close_price: float, volume: float, 
+    def _calculate_trade_metrics(open_price: float, close_price: float, volume: int, 
                                mae: float, mfe: float, capital_invested: float, 
                                account_balance: float, commission: float) -> Tuple[float, float, float, float, float]:
         """Calculate trade metrics using Numba-accelerated computation"""
@@ -80,7 +80,7 @@ class BacktestingTradeEngine:
         return pnl, achieved_rr, opportunity_rr, capital_risked_pct, roi
 
     def signal_based_trade_executor(self, data: pd.DataFrame, balance: float, leverage: float,
-                                  volume: float, commission: float) -> Dict:
+                                  volume: int, commission: float) -> Dict:
         """
         Execute trades based on signals.
         
@@ -88,7 +88,7 @@ class BacktestingTradeEngine:
             data (pd.DataFrame): DataFrame with columns ['time', 'Price', 'Signal']
             balance (float): Initial account balance
             leverage (float): Account leverage
-            volume (float): Trading volume
+            volume (int): Trading volume
             commission (float): Commission per trade
             
         Returns:
@@ -154,7 +154,7 @@ class BacktestingTradeEngine:
             raise
 
     def sltp_based_trade_executor(self, data: pd.DataFrame, balance: float, leverage: float,
-                                volume: float, commission: float) -> Dict:
+                                volume: int, commission: float) -> Dict:
         """
         Execute trades based on stop-loss and take-profit levels.
         
@@ -162,40 +162,55 @@ class BacktestingTradeEngine:
             data (pd.DataFrame): DataFrame with columns ['time', 'Price', 'Signal', 'SL', 'TP']
             balance (float): Initial account balance
             leverage (float): Account leverage
-            volume (float): Trading volume
+            volume (int): Trading volume
             commission (float): Commission per trade
             
         Returns:
             Dict: Dictionary containing trades and metrics
         """
         try:
+            # Validate and convert numeric columns
+            required_columns = ['time', 'Price', 'Signal', 'SL', 'TP']
+            for col in required_columns:
+                if col not in data.columns:
+                    raise ValueError(f"Required column '{col}' not found in data")
+            
+            # Convert numeric columns to float
+            numeric_columns = ['Price', 'SL', 'TP']
+            for col in numeric_columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+            
+            # Drop rows with NaN values in numeric columns
+            data = data.dropna(subset=numeric_columns)
+            
             trades = []
             current_position = None
-            entry_price = 0
+            entry_price = 0.0
             entry_time = None
-            stop_loss = 0
-            take_profit = 0
+            stop_loss = 0.0
+            take_profit = 0.0
             
             for idx, row in data.iterrows():
                 if current_position is None:  # No position
                     if row['Signal'] == 'Buy':
                         current_position = 'Long'
-                        entry_price = row['Price']
+                        entry_price = float(row['Price'])
                         entry_time = row['time']
-                        stop_loss = row['SL']
-                        take_profit = row['TP']
+                        stop_loss = float(row['SL'])
+                        take_profit = float(row['TP'])
                     elif row['Signal'] == 'Sell':
                         current_position = 'Short'
-                        entry_price = row['Price']
+                        entry_price = float(row['Price'])
                         entry_time = row['time']
-                        stop_loss = row['SL']
-                        take_profit = row['TP']
+                        stop_loss = float(row['SL'])
+                        take_profit = float(row['TP'])
                 else:  # Have position
+                    current_price = float(row['Price'])
                     # Check for stop-loss or take-profit
                     if current_position == 'Long':
-                        if row['Price'] <= stop_loss or row['Price'] >= take_profit:
+                        if current_price <= stop_loss or current_price >= take_profit:
                             # Calculate PnL
-                            pnl = (row['Price'] - entry_price) * volume
+                            pnl = (current_price - entry_price) * volume
                             pnl -= commission
                             balance += pnl
                             
@@ -205,19 +220,19 @@ class BacktestingTradeEngine:
                                 'Price': entry_price,
                                 'Signal': 'Buy',
                                 'Exit_Time': row['time'],
-                                'Exit_Price': row['Price'],
+                                'Exit_Price': current_price,
                                 'PnL': pnl,
                                 'Balance': balance
                             })
                             
                             # Reset position
                             current_position = None
-                            entry_price = 0
+                            entry_price = 0.0
                             entry_time = None
                     else:  # Short position
-                        if row['Price'] >= stop_loss or row['Price'] <= take_profit:
+                        if current_price >= stop_loss or current_price <= take_profit:
                             # Calculate PnL
-                            pnl = (entry_price - row['Price']) * volume
+                            pnl = (entry_price - current_price) * volume
                             pnl -= commission
                             balance += pnl
                             
@@ -227,22 +242,22 @@ class BacktestingTradeEngine:
                                 'Price': entry_price,
                                 'Signal': 'Sell',
                                 'Exit_Time': row['time'],
-                                'Exit_Price': row['Price'],
+                                'Exit_Price': current_price,
                                 'PnL': pnl,
                                 'Balance': balance
                             })
                             
                             # Reset position
                             current_position = None
-                            entry_price = 0
+                            entry_price = 0.0
                             entry_time = None
             
             # Calculate metrics
             metrics = self._calculate_performance_metrics(trades)
         
             return {
-                    'trades': trades,
-                    'metrics': metrics
+                'trades': trades,
+                'metrics': metrics
             }
             
         except Exception as e:
