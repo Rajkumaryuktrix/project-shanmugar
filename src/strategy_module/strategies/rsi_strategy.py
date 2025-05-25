@@ -19,12 +19,25 @@ class RSIStrategy:
             tp_atr_multiplier (float): Multiplier for ATR to set take profit
             atr_period (int): Period for ATR calculation
         """
-        self.rsi_period = rsi_period
-        self.overbought = overbought
-        self.oversold = oversold
-        self.sl_atr_multiplier = sl_atr_multiplier
-        self.tp_atr_multiplier = tp_atr_multiplier
-        self.atr_period = atr_period
+        # Convert parameters to appropriate types
+        self.rsi_period = int(rsi_period)
+        self.overbought = float(overbought)
+        self.oversold = float(oversold)
+        self.sl_atr_multiplier = float(sl_atr_multiplier)
+        self.tp_atr_multiplier = float(tp_atr_multiplier)
+        self.atr_period = int(atr_period)
+        
+        # Validate parameters
+        if self.rsi_period <= 0:
+            raise ValueError("RSI period must be greater than 0")
+        if self.atr_period <= 0:
+            raise ValueError("ATR period must be greater than 0")
+        if self.overbought <= self.oversold:
+            raise ValueError("Overbought level must be greater than oversold level")
+        if self.sl_atr_multiplier <= 0:
+            raise ValueError("Stop loss ATR multiplier must be greater than 0")
+        if self.tp_atr_multiplier <= 0:
+            raise ValueError("Take profit ATR multiplier must be greater than 0")
 
     def calculate_rsi(self, data):
         """Calculate RSI using custom implementation"""
@@ -32,8 +45,8 @@ class RSIStrategy:
         delta = data['close'].diff()
         
         # Separate gains and losses
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=int(self.rsi_period)).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=int(self.rsi_period)).mean()
         
         # Calculate RS and RSI
         rs = gain / loss
@@ -53,7 +66,7 @@ class RSIStrategy:
         true_range = ranges.max(axis=1)
         
         # Calculate ATR
-        atr = true_range.rolling(window=self.atr_period).mean()
+        atr = true_range.rolling(window=int(self.atr_period)).mean()
         
         return atr
 
