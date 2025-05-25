@@ -1,98 +1,58 @@
-# Trading Strategy Tester
+# Shanmugaa - Algorithmic Trading Project
 
-A web application for testing trading strategies using historical data from Upstox. The application consists of a FastAPI backend and a Streamlit frontend.
-
-## Features
-
-- Test trading strategies with historical data
-- Visualize strategy performance with interactive charts
-- Analyze trade distributions and metrics
-- Support for multiple timeframes and symbols
-- Real-time strategy testing with customizable parameters
-
-## Setup
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd <repository-name>
-```
-
-2. Create a virtual environment and activate it:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up your Upstox API credentials:
-Create a `.env` file in the root directory and add your Upstox API credentials:
-```
-UPSTOX_API_KEY=your_api_key
-UPSTOX_API_SECRET=your_api_secret
-```
-
-## Running the Application
-
-1. Start the FastAPI backend:
-```bash
-uvicorn api:app --reload
-```
-
-2. In a new terminal, start the Streamlit frontend:
-```bash
-streamlit run app.py
-```
-
-3. Open your browser and navigate to:
-```
-http://localhost:8501
-```
-
-## Usage
-
-1. Select a trading symbol from the dropdown menu
-2. Choose the timeframe for testing
-3. Set the testing period in months
-4. Configure strategy parameters:
-   - Short and long window for moving averages
-   - Investing amount
-   - Leverage
-   - Volume
-   - Commission
-5. Click "Test Strategy" to run the backtest
-6. View the results in the main panel:
-   - Strategy metrics and statistics
-   - Equity curve
-   - Trade distribution analysis
-   - Trade history
+This project implements an algorithmic trading system with the following key components:
 
 ## Project Structure
 
 ```
-project_root/
-├── api.py                      # FastAPI backend implementation
-├── app.py                      # Streamlit frontend implementation
-├── strategy_tester.py          # Core strategy testing logic
-├── strategies/                 # Trading strategies package
-│   ├── __init__.py            # Package initialization
-│   └── moving_average_strategy.py  # Moving average crossover strategy
-├── requirements.txt            # Project dependencies
-└── README.md                   # Project documentation
+src/
+├── broker_module/
+│   └── upstox/
+│       ├── data/
+│       │   └── CandleData.py
+│       ├── utils/
+│       │   └── InstrumentKeyFinder.py
+│       └── __init__.py
+└── strategy_module/
+    ├── strategies/
+    │   └── moving_average_strategy.py
+    ├── utils/
+    │   ├── backward_testing.py
+    │   ├── strategy_tester.py
+    │   └── __init__.py
+    ├── results/
+    ├── core_engine.py
+    └── strategy_cli.py
 ```
 
-## Contributing
+## Features
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+- Historical data fetching and management
+- Strategy implementation and testing
+- Backtesting framework
+- Performance optimization
+- Results analysis and reporting
+
+## Setup
+
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Configure your Upstox API credentials
+4. Run the strategy tester:
+   ```bash
+   python src/strategy_module/strategy_cli.py
+   ```
+
+## Development
+
+- Follow PEP 8 style guide
+- Write unit tests for new features
+- Update documentation as needed
+- Use meaningful commit messages
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT License
