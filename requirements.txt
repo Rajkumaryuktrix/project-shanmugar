@@ -1,0 +1,17 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+streamlit==1.28.2
+pandas>=1.5.0
+numpy>=1.21.0
+plotly==5.18.0
+requests>=2.28.0
+python-dotenv>=0.19.0
+git+https://github.com/upstox/upstox-python.git
+scipy==1.11.4
+statsmodels==0.14.0
+matplotlib==3.8.2
+pyyaml>=6.0.1
+typing-extensions>=4.5.0
+python-dateutil>=2.8.2
+pathlib>=1.0.1
+tabulate>=0.9.0 
