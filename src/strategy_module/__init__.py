@@ -12,19 +12,38 @@ Components:
     - CLI: Command-line interface for strategy management
 """
 
+import logging
+from pathlib import Path
+import json
+import os
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+# Define paths
+MODULE_PATH = Path(__file__).parent
+RESULTS_PATH = MODULE_PATH / 'results'
+CONFIG_PATH = MODULE_PATH / 'config'
+
+# Create necessary directories
+RESULTS_PATH.mkdir(exist_ok=True)
+CONFIG_PATH.mkdir(exist_ok=True)
+
+# Import strategies
+from .strategies.rsi_strategy import RSIStrategy
+from .strategies.moving_average_strategy import MovingAverageStrategy
+from .strategies.time_based_strategy import TimeBasedStrategy
+
+# Import core components
 from .core_engine import StrategyEngine
 from .strategy_cli import StrategyCLI
 from .utils import (
     StrategyTester,
-    BacktestingTradeEngine,
-    ForwardTesting,
+    BacktestingEngine,
+    ForwardTestingEngine,
     AdvancedStatisticalTesting,
     StrategyEvaluationMetrics
 )
-
-# Import available strategies
-from .strategies.rsi_strategy import RSIStrategy
-from .strategies.moving_average_strategy import MovingAverageCrossoverStrategy
 
 __all__ = [
     # Core Components
@@ -33,12 +52,13 @@ __all__ = [
     
     # Strategy Implementations
     'RSIStrategy',
-    'MovingAverageCrossoverStrategy',
+    'MovingAverageStrategy',
+    'TimeBasedStrategy',
     
     # Testing and Evaluation Tools
     'StrategyTester',
-    'BacktestingTradeEngine',
-    'ForwardTesting',
+    'BacktestingEngine',
+    'ForwardTestingEngine',
     'AdvancedStatisticalTesting',
     'StrategyEvaluationMetrics'
 ]

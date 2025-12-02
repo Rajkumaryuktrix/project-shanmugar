@@ -5,13 +5,21 @@ import numpy as np
 from datetime import datetime
 import os
 import json
+from dotenv import load_dotenv
+from pathlib import Path
 
-from ...broker_module.upstox.data.CandleData import UpstoxHistoricalData
+from src.broker_module.upstox.data.CandleData import UpstoxHistoricalData
+from src.broker_module.upstox.utils.InstrumentKeyFinder import InstrumentKeyFinder
 from itertools import product
 from scipy.optimize import differential_evolution
-from .backward_testing import BacktestingTradeEngine
-from .strategy_evaluation_metrics import StrategyEvaluationMetrics
+from src.strategy_module.utils.backward_testing import BacktestingEngine
+from src.strategy_module.utils.strategy_evaluation_metrics import StrategyEvaluationMetrics
+from src.strategy_module.strategies.rsi_strategy import RSIStrategy
+from src.strategy_module.strategies.moving_average_strategy import MovingAverageStrategy
+from src.strategy_module.strategies.time_based_strategy import TimeBasedStrategy
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class StrategyOptimizer:
@@ -126,11 +134,11 @@ class StrategyOptimizer:
         # Check for missing values
         if self.data[required_columns].isnull().any().any():
             logger.warning("Data contains missing values. Filling with forward fill method.")
-            self.data[required_columns] = self.data[required_columns].fillna(method='ffill')
+            self.data[required_columns] = self.data[required_columns].ffill()
             
         # Ensure time column is datetime
         if not pd.api.types.is_datetime64_any_dtype(self.data['time']):
-            self.data['time'] = pd.to_datetime(self.data['time'])
+            self.data['time'] = pd.to_datetime(self.data['time'], errors='coerce', infer_datetime_format=True)
             
         # Sort data by time
         self.data = self.data.sort_values('time')
@@ -364,7 +372,7 @@ class StrategyOptimizer:
                 return None
             
             # Initialize trade engine
-            trade_engine = BacktestingTradeEngine()
+            trade_engine = BacktestingEngine()
             
             # Execute trades
             if self._trade_engine_type == "Signals":

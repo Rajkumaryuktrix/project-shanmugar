@@ -5,11 +5,16 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import json
+import numpy as np
+from pathlib import Path
 
-from ..broker_module.upstox.data.CandleData import UpstoxHistoricalData
-from ..broker_module.upstox.utils.InstrumentKeyFinder import InstrumentKeyFinder
+from src.broker_module.upstox.data.CandleData import UpstoxHistoricalData
+from src.broker_module.upstox.utils.InstrumentKeyFinder import InstrumentKeyFinder
 from .utils.strategy_tester import StrategyTester
 from .utils.strategy_optimizer import StrategyOptimizer
+from .strategies.rsi_strategy import RSIStrategy
+from .strategies.moving_average_strategy import MovingAverageStrategy
+from .strategies.time_based_strategy import TimeBasedStrategy
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +37,14 @@ class StrategyEngine:
         
         # Create results directory structure
         self._initialize_results_directories()
+        
+        self.strategies = {
+            'rsi': RSIStrategy,
+            'moving_average': MovingAverageStrategy,
+            'time_based': TimeBasedStrategy
+        }
+        self.current_strategy = None
+        self.current_data = None
         
     def _initialize_results_directories(self) -> None:
         """Initialize the results directory structure."""
@@ -62,7 +75,8 @@ class StrategyEngine:
             for directory in [backtest_dir, optimization_dir]:
                 for file_name in json_files:
                     file_path = os.path.join(directory, file_name)
-                    if not os.path.exists(file_path):
+                    # If file does not exist or is empty, write []
+                    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
                         with open(file_path, 'w') as f:
                             json.dump([], f, indent=4)
             
@@ -147,6 +161,26 @@ class StrategyEngine:
         
         return params
     
+    def load_strategy(self, strategy_name: str, **kwargs) -> None:
+        """
+        Load a trading strategy.
+        
+        Args:
+            strategy_name (str): Name of the strategy to load
+            **kwargs: Strategy-specific parameters
+        """
+        try:
+            if strategy_name not in self.strategies:
+                raise ValueError(f"Unknown strategy: {strategy_name}. Available strategies: {list(self.strategies.keys())}")
+            
+            strategy_class = self.strategies[strategy_name]
+            self.current_strategy = strategy_class(**kwargs)
+            logger.info(f"Loaded strategy: {strategy_name}")
+            
+        except Exception as e:
+            logger.error(f"Error loading strategy: {str(e)}")
+            raise
+
     def load_data(self, 
                  instrument_key: str,
                  unit: str,
@@ -245,6 +279,7 @@ class StrategyEngine:
             data = data.reset_index(drop=True)
             
             logger.info(f"Loaded data with {len(data)} rows and columns: {data.columns.tolist()}")
+            self.current_data = data
             return data
             
         except Exception as e:
@@ -629,4 +664,25 @@ class StrategyEngine:
     
     def get_current_config(self) -> Optional[Dict]:
         """Get the configuration of the most recent test/optimization."""
-        return self.current_config 
+        return self.current_config
+
+    def save_results(self, results: pd.DataFrame, filename: Optional[str] = None) -> None:
+        """
+        Save strategy results to file.
+        
+        Args:
+            results (pd.DataFrame): Results to save
+            filename (str, optional): Custom filename. If None, generates timestamp-based name
+        """
+        try:
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"strategy_results_{timestamp}.csv"
+            
+            results_path = Path(__file__).parent / 'results' / filename
+            results.to_csv(results_path, index=False)
+            logger.info(f"Saved results to {results_path}")
+            
+        except Exception as e:
+            logger.error(f"Error saving results: {str(e)}")
+            raise 

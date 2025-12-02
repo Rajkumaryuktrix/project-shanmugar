@@ -1,5 +1,9 @@
 import pandas as pd
 import numpy as np
+import logging
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 class RSIStrategy:
     """
@@ -28,6 +32,16 @@ class RSIStrategy:
         self.atr_period = int(atr_period)
         
         # Validate parameters
+        self._validate_parameters()
+        
+        logger.info(f"RSI Strategy initialized with parameters: RSI Period={self.rsi_period}, "
+                   f"Overbought={self.overbought}, Oversold={self.oversold}, "
+                   f"SL ATR Multiplier={self.sl_atr_multiplier}, "
+                   f"TP ATR Multiplier={self.tp_atr_multiplier}, "
+                   f"ATR Period={self.atr_period}")
+
+    def _validate_parameters(self):
+        """Validate strategy parameters"""
         if self.rsi_period <= 0:
             raise ValueError("RSI period must be greater than 0")
         if self.atr_period <= 0:
@@ -38,41 +52,60 @@ class RSIStrategy:
             raise ValueError("Stop loss ATR multiplier must be greater than 0")
         if self.tp_atr_multiplier <= 0:
             raise ValueError("Take profit ATR multiplier must be greater than 0")
+        if self.overbought <= 50 or self.oversold >= 50:
+            raise ValueError("Overbought must be > 50 and Oversold must be < 50")
 
     def calculate_rsi(self, data):
         """Calculate RSI using custom implementation"""
-        # Calculate price changes
-        delta = data['close'].diff()
-        
-        # Separate gains and losses
-        gain = (delta.where(delta > 0, 0)).rolling(window=int(self.rsi_period)).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=int(self.rsi_period)).mean()
-        
-        # Calculate RS and RSI
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
+        try:
+            # Calculate price changes
+            delta = data['close'].diff()
+            
+            # Separate gains and losses
+            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+            
+            # Handle division by zero
+            loss = loss.replace(0, np.nan)
+            
+            # Calculate RS and RSI
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            return rsi.fillna(50)  # Fill NaN with neutral RSI value
+            
+        except Exception as e:
+            logger.error(f"Error calculating RSI: {str(e)}")
+            raise
 
     def calculate_atr(self, data):
         """Calculate ATR using custom implementation"""
-        # Calculate True Range
-        high_low = data['high'] - data['low']
-        high_close = np.abs(data['high'] - data['close'].shift())
-        low_close = np.abs(data['low'] - data['close'].shift())
-        
-        # True Range is the maximum of the three
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        
-        # Calculate ATR
-        atr = true_range.rolling(window=int(self.atr_period)).mean()
-        
-        return atr
+        try:
+            # Calculate True Range
+            high_low = data['high'] - data['low']
+            high_close = np.abs(data['high'] - data['close'].shift())
+            low_close = np.abs(data['low'] - data['close'].shift())
+            
+            # True Range is the maximum of the three
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            
+            # Calculate ATR
+            atr = true_range.rolling(window=self.atr_period).mean()
+            
+            return atr.bfill()  # Fill NaN with next valid value
+            
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {str(e)}")
+            raise
 
     def calculate_sma(self, data, period):
         """Calculate Simple Moving Average"""
-        return data['close'].rolling(window=period).mean()
+        try:
+            return data['close'].rolling(window=period).mean().bfill()
+        except Exception as e:
+            logger.error(f"Error calculating SMA: {str(e)}")
+            raise
 
     def generate_signals(self, data):
         """
@@ -84,61 +117,81 @@ class RSIStrategy:
         Returns:
             pd.DataFrame: DataFrame with signals and SL/TP levels
         """
-        # Create a copy of the input data
-        df = data.copy()
-        
-        # Calculate indicators
-        df['RSI'] = self.calculate_rsi(df)
-        df['ATR'] = self.calculate_atr(df)
-        df['SMA20'] = self.calculate_sma(df, 20)
-        df['SMA50'] = self.calculate_sma(df, 50)
-        
-        # Initialize signal column
-        df['Signal'] = None
-        
-        # Generate signals based on RSI levels and trend confirmation
-        # Buy conditions:
-        # 1. RSI crosses below oversold level
-        # 2. Price is above SMA20 (short-term uptrend)
-        # 3. SMA20 is above SMA50 (long-term uptrend)
-        buy_condition = (
-            (df['RSI'] < self.oversold) & 
-            (df['close'] > df['SMA20']) & 
-            (df['SMA20'] > df['SMA50'])
-        )
-        
-        # Sell conditions:
-        # 1. RSI crosses above overbought level
-        # 2. Price is below SMA20 (short-term downtrend)
-        # 3. SMA20 is below SMA50 (long-term downtrend)
-        sell_condition = (
-            (df['RSI'] > self.overbought) & 
-            (df['close'] < df['SMA20']) & 
-            (df['SMA20'] < df['SMA50'])
-        )
-        
-        # Apply signals
-        df.loc[buy_condition, 'Signal'] = 'Buy'
-        df.loc[sell_condition, 'Signal'] = 'Sell'
-        
-        # Calculate Stop Loss and Take Profit levels
-        df['SL'] = None
-        df['TP'] = None
-        
-        # For Buy signals
-        buy_mask = df['Signal'] == 'Buy'
-        df.loc[buy_mask, 'SL'] = df.loc[buy_mask, 'close'] - (df.loc[buy_mask, 'ATR'] * self.sl_atr_multiplier)
-        df.loc[buy_mask, 'TP'] = df.loc[buy_mask, 'close'] + (df.loc[buy_mask, 'ATR'] * self.tp_atr_multiplier)
-        
-        # For Sell signals
-        sell_mask = df['Signal'] == 'Sell'
-        df.loc[sell_mask, 'SL'] = df.loc[sell_mask, 'close'] + (df.loc[sell_mask, 'ATR'] * self.sl_atr_multiplier)
-        df.loc[sell_mask, 'TP'] = df.loc[sell_mask, 'close'] - (df.loc[sell_mask, 'ATR'] * self.tp_atr_multiplier)
-        
-        # Clean up the DataFrame
-        result_df = df[['time', 'open', 'high', 'low', 'close', 'volume', 'Signal', 'SL', 'TP']].copy()
-        
-        # Remove any rows with NaN values
-        result_df = result_df.dropna()
-        
-        return result_df 
+        try:
+            # Validate input data
+            required_columns = ['time', 'open', 'high', 'low', 'close', 'volume']
+            if not all(col in data.columns for col in required_columns):
+                missing_cols = [col for col in required_columns if col not in data.columns]
+                raise ValueError(f"Missing required columns in input data: {missing_cols}")
+            
+            # Create a copy of the input data
+            df = data.copy()
+            
+            # Calculate indicators
+            df['RSI'] = self.calculate_rsi(df)
+            df['ATR'] = self.calculate_atr(df)
+            df['SMA20'] = self.calculate_sma(df, 20)
+            df['SMA50'] = self.calculate_sma(df, 50)
+            
+            # Initialize signal column
+            df['Signal'] = None
+            
+            # Generate signals based on RSI levels and trend confirmation
+            # Buy conditions:
+            # 1. RSI crosses below oversold level
+            # 2. Price is above SMA20 (short-term uptrend)
+            # 3. SMA20 is above SMA50 (long-term uptrend)
+            buy_condition = (
+                (df['RSI'] < self.oversold) & 
+                (df['close'] > df['SMA20']) & 
+                (df['SMA20'] > df['SMA50'])
+            )
+            
+            # Sell conditions:
+            # 1. RSI crosses above overbought level
+            # 2. Price is below SMA20 (short-term downtrend)
+            # 3. SMA20 is below SMA50 (long-term downtrend)
+            sell_condition = (
+                (df['RSI'] > self.overbought) & 
+                (df['close'] < df['SMA20']) & 
+                (df['SMA20'] < df['SMA50'])
+            )
+            
+            # Apply signals
+            df.loc[buy_condition, 'Signal'] = 'Buy'
+            df.loc[sell_condition, 'Signal'] = 'Sell'
+            
+            # Calculate Stop Loss and Take Profit levels
+            df['SL'] = None
+            df['TP'] = None
+            
+            # For Buy signals
+            buy_mask = df['Signal'] == 'Buy'
+            df.loc[buy_mask, 'SL'] = df.loc[buy_mask, 'close'] - (df.loc[buy_mask, 'ATR'] * self.sl_atr_multiplier)
+            df.loc[buy_mask, 'TP'] = df.loc[buy_mask, 'close'] + (df.loc[buy_mask, 'ATR'] * self.tp_atr_multiplier)
+            
+            # For Sell signals
+            sell_mask = df['Signal'] == 'Sell'
+            df.loc[sell_mask, 'SL'] = df.loc[sell_mask, 'close'] + (df.loc[sell_mask, 'ATR'] * self.sl_atr_multiplier)
+            df.loc[sell_mask, 'TP'] = df.loc[sell_mask, 'close'] - (df.loc[sell_mask, 'ATR'] * self.tp_atr_multiplier)
+            
+            # Clean up the DataFrame
+            result_df = df[['time', 'open', 'high', 'low', 'close', 'volume', 'Signal', 'SL', 'TP']].copy()
+            
+            # Remove any rows with NaN values
+            result_df = result_df.dropna()
+            
+            # Validate if any signals were generated
+            if result_df['Signal'].isna().all():
+                logger.warning("No trading signals were generated. Check strategy parameters and market conditions.")
+            
+            # Log signal statistics
+            buy_signals = (result_df['Signal'] == 'Buy').sum()
+            sell_signals = (result_df['Signal'] == 'Sell').sum()
+            logger.info(f"Generated {buy_signals} buy signals and {sell_signals} sell signals")
+            
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"Error generating signals: {str(e)}")
+            raise 

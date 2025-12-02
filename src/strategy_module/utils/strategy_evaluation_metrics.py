@@ -1,258 +1,371 @@
 import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
 import logging
+from dataclasses import dataclass
+import json
+from datetime import datetime
 
+# Setup logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 @dataclass
-class StrategyMetrics:
-    """Data class to store strategy evaluation metrics"""
-    ticker: str
-    initial_deposit: float
-    final_balance: float
-    total_net_profit: float
-    gross_profit: float
-    gross_loss: float
-    balance_absolute_drawdown: float
-    balance_maximal_drawdown_pct: float
-    balance_relative_drawdown_pct: float
-    commission_paid: float
-    min_position_holding_time: pd.Timedelta
-    max_position_holding_time: pd.Timedelta
-    avg_position_holding_time: pd.Timedelta
-    total_trades: int
-    total_deals: int
-    long_trades_won: float
-    short_trades_won: float
-    largest_profit_trade: float
-    largest_loss_trade: float
-    avg_profit_per_trade: float
-    avg_loss_per_trade: float
-    max_consecutive_wins: int
-    max_consecutive_losses: int
-    avg_return_per_trade: float
-    std_dev_returns: float
+class TradeMetrics:
+    """Data class to store trade metrics"""
+    trade_id: int
+    open_action: str
+    close_action: str
+    trade_type: str
+    open_time: int
+    close_time: int
+    volume: float
+    open_price: float
+    close_price: float
+    pnl: float
+    mae: float
+    mfe: float
+    achieved_rr: float
+    opportunity_rr: float
+    duration: float
+    capital_invested: float
+    capital_risked_pct: float
+    roi: float
+    account_balance: float
+    commission: float
 
 class StrategyEvaluationMetrics:
-    def __init__(self, data: pd.DataFrame, balance: float, ticker: str):
+    def __init__(self, backtest_results: Dict, ticker: str):
         """
-        Initialize strategy evaluation metrics calculator.
+        Initialize strategy evaluation metrics.
         
         Args:
-            data: DataFrame containing trade data
-            balance: Initial account balance
-            ticker: Trading symbol
+            backtest_results: Dictionary containing backtest results
+            ticker: Ticker symbol
         """
-        self.Trades = data
-        self.balance = balance
-        self.Ticker = ticker
-        self.EPS = 1e-8  # Small threshold for numerical stability
+        self.ticker = ticker
+        self.trades = backtest_results['trades']
+        self.balance_history = np.array(backtest_results['balance_history'])
+        self.equity_curve = np.array(backtest_results['equity_curve'])
+        self.drawdown_curve = np.array(backtest_results['drawdown_curve'])
         
-        # Initialize metrics containers
-        self.metrics = pd.DataFrame()
-        self.stats = pd.DataFrame()
-        self.Final_Recommendation = None
+        # Get initial balance from balance history
+        self.initial_balance = float(self.balance_history[0]) if len(self.balance_history) > 0 else 0.0
+        
+        # Initialize metrics
+        self.metrics = {}
+        self.statistics = {}
+        self.recommendation = None
         
         # Calculate metrics
-        self._calculate_consecutive_stats()
-        self._calculate_evaluation_metrics()
-        self._calculate_strategy_statistics()
-        self._interpret_trading_metrics()
+        self._calculate_metrics()
 
-    def _calculate_consecutive_stats(self) -> None:
-        """Calculate consecutive wins and losses using vectorized operations"""
-        pnls = self.Trades['PnL'].values
-        # Create masks for wins and losses
-        wins = pnls > 0
-        losses = pnls < 0
-        
-        # Calculate consecutive wins and losses
-        win_streaks = np.zeros_like(pnls, dtype=int)
-        loss_streaks = np.zeros_like(pnls, dtype=int)
-        
-        # Vectorized calculation of streaks
-        win_streaks[wins] = 1
-        loss_streaks[losses] = 1
-        
-        # Calculate cumulative sums
-        win_streaks = np.cumsum(win_streaks)
-        loss_streaks = np.cumsum(loss_streaks)
-        
-        # Reset streaks when opposite occurs
-        win_streaks[losses] = 0
-        loss_streaks[wins] = 0
-        
-        self._max_consecutive_wins = np.max(win_streaks)
-        self._max_consecutive_losses = np.max(loss_streaks)
-
-    def _calculate_evaluation_metrics(self) -> None:
-        """Calculate evaluation metrics using vectorized operations"""
+    def _calculate_metrics(self) -> None:
+        """Calculate all strategy evaluation metrics"""
         try:
-            # Convert to numpy arrays for faster calculations
-            pnls = self.Trades['PnL'].values
-            account_balances = self.Trades['Balance'].values
-            
-            # Calculate basic metrics
-            total_trades = len(self.Trades)
-            winning_trades = np.sum(pnls > 0)
-            losing_trades = np.sum(pnls < 0)
-            win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
-            
-            # Calculate PnL metrics
-            total_pnl = np.sum(pnls)
-            average_pnl = np.mean(pnls) if total_trades > 0 else 0
-            max_pnl = np.max(pnls) if total_trades > 0 else 0
-            min_pnl = np.min(pnls) if total_trades > 0 else 0
+            if not self.trades:
+                self._set_empty_metrics()
+                return
+
+            # Calculate basic trade metrics
+            self._calculate_trade_metrics()
             
             # Calculate drawdown metrics
-            cumulative_returns = np.cumsum(pnls)
-            running_max = np.maximum.accumulate(cumulative_returns)
-            drawdowns = running_max - cumulative_returns
-            max_drawdown = np.max(drawdowns) if len(drawdowns) > 0 else 0
+            self._calculate_drawdown_metrics()
             
-            # Calculate risk metrics
-            daily_returns = np.diff(account_balances) / account_balances[:-1]
-            sharpe_ratio = np.mean(daily_returns) / np.std(daily_returns) if len(daily_returns) > 0 and np.std(daily_returns) != 0 else 0
-            sortino_ratio = np.mean(daily_returns) / np.std(daily_returns[daily_returns < 0]) if len(daily_returns) > 0 and np.std(daily_returns[daily_returns < 0]) != 0 else 0
+            # Calculate risk-adjusted returns
+            self._calculate_risk_adjusted_returns()
             
-            # Calculate profit factor
-            gross_profit = np.sum(pnls[pnls > 0])
-            gross_loss = abs(np.sum(pnls[pnls < 0]))
-            profit_factor = gross_profit / gross_loss if gross_loss != 0 else float('inf')
+            # Calculate CAGR and Calmar ratio
+            self._calculate_cagr_and_calmar()
             
-            # Calculate final balance
-            final_balance = account_balances[-1] if len(account_balances) > 0 else self.balance
+            # Calculate trade statistics
+            self._calculate_trade_statistics()
             
-            # Store metrics
-            self.metrics = pd.DataFrame({
-                'Metric': [
-                    'Total_Trades', 'Winning_Trades', 'Losing_Trades', 'Win_Rate',
-                    'Total_PnL', 'Average_PnL', 'Max_PnL', 'Min_PnL',
-                    'Max_Drawdown', 'Sharpe_Ratio', 'Sortino_Ratio', 'Profit_Factor',
-                    'Initial_Deposit', 'Final_Balance', 'Gross_Profit', 'Gross_Loss',
-                    'Balance_Absolute_Drawdown'
-                ],
-                'Value': [
-                    total_trades, winning_trades, losing_trades, win_rate,
-                    total_pnl, average_pnl, max_pnl, min_pnl,
-                    max_drawdown, sharpe_ratio, sortino_ratio, profit_factor,
-                    self.balance, final_balance, gross_profit, -gross_loss,
-                    max_drawdown
-                ]
+            # Generate recommendation
+            self._generate_recommendation()
+
+        except Exception as e:
+            logger.error(f"Error calculating metrics: {str(e)}")
+            self._set_empty_metrics()
+
+    def _calculate_trade_metrics(self) -> None:
+        """Calculate basic trade metrics"""
+        try:
+            if not self.trades:
+                return
+                
+            # Calculate win rate and profit metrics
+            winning_trades = [t for t in self.trades if float(t['PnL']) > 0]
+            losing_trades = [t for t in self.trades if float(t['PnL']) < 0]
+            
+            total_trades = len(self.trades)
+            winning_trades_count = len(winning_trades)
+            losing_trades_count = len(losing_trades)
+            
+            win_rate = winning_trades_count / total_trades if total_trades > 0 else 0.0
+            
+            gross_profit = sum(float(t['PnL']) for t in winning_trades)
+            gross_loss = abs(sum(float(t['PnL']) for t in losing_trades))
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+            
+            avg_win = np.mean([float(t['PnL']) for t in winning_trades]) if winning_trades else 0.0
+            avg_loss = np.mean([abs(float(t['PnL'])) for t in losing_trades]) if losing_trades else 0.0
+            
+            expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+            
+            self.metrics.update({
+                'win_rate': win_rate * 100,  # Convert to percentage
+                'profit_factor': profit_factor,
+                'expectancy': expectancy,
+                'avg_win': avg_win,
+                'avg_loss': avg_loss,
+                'total_trades': total_trades,
+                'winning_trades': winning_trades_count,
+                'losing_trades': losing_trades_count
             })
             
         except Exception as e:
-            logger.error(f"Error calculating evaluation metrics: {str(e)}")
-            logger.error(f"Trades DataFrame columns: {self.Trades.columns.tolist()}")
-            raise
+            logger.error(f"Error calculating trade metrics: {str(e)}")
 
-    def _calculate_strategy_statistics(self) -> None:
-        """Calculate strategy statistics using vectorized operations"""
+    def _calculate_drawdown_metrics(self) -> None:
+        """Calculate drawdown metrics"""
         try:
-            # Get basic metrics
-            total_trades = self.metrics.loc[self.metrics['Metric'] == 'Total_Trades', 'Value'].values[0]
-            initial_deposit = self.metrics.loc[self.metrics['Metric'] == 'Initial_Deposit', 'Value'].values[0]
-            final_balance = self.metrics.loc[self.metrics['Metric'] == 'Final_Balance', 'Value'].values[0]
-            total_net_profit = self.metrics.loc[self.metrics['Metric'] == 'Total_PnL', 'Value'].values[0]
-            gross_profit = self.metrics.loc[self.metrics['Metric'] == 'Gross_Profit', 'Value'].values[0]
-            gross_loss = abs(self.metrics.loc[self.metrics['Metric'] == 'Gross_Loss', 'Value'].values[0])
-            max_drawdown = abs(self.metrics.loc[self.metrics['Metric'] == 'Max_Drawdown', 'Value'].values[0])
-            
-            # Calculate returns
-            pnls = self.Trades['PnL'].values
-            returns = pnls / initial_deposit if initial_deposit > 0 else np.zeros_like(pnls)
-            
-            # Calculate statistics
-            stats_dict = {
-                'Ticker': self.Ticker,
-                'Profit_Factor': gross_profit / gross_loss if gross_loss > self.EPS else float('inf'),
-                'Recovery_Factor': total_net_profit / max_drawdown if max_drawdown > self.EPS else 0.0,
-                'AHPR': (final_balance - initial_deposit) / (initial_deposit * total_trades) if total_trades > 0 else 0,
-                'GHPR': ((final_balance / initial_deposit) ** (1 / total_trades)) - 1 if total_trades > 0 and initial_deposit > 0 else 0,
-                'Expected_Payoff': total_net_profit / total_trades if total_trades > 0 else 0,
-                'Win_Loss_Ratio': np.sum(pnls > 0) / np.sum(pnls < 0) if np.sum(pnls < 0) > 0 else float('inf'),
-                'Win_Rate': (np.sum(pnls > 0) / total_trades) * 100 if total_trades > 0 else 0
-            }
-            
-            # Calculate risk-adjusted returns
-            risk_free_rate = 0.0001  # 0.01% per trade
-            avg_return = np.mean(returns)
-            std_dev = np.std(returns)
-            
-            # Sharpe Ratio
-            if abs(std_dev) > self.EPS and abs(avg_return - risk_free_rate) > self.EPS:
-                stats_dict['Sharpe_Ratio'] = (avg_return - risk_free_rate) / std_dev
+            if len(self.equity_curve) > 1:
+                peak = np.maximum.accumulate(self.equity_curve)
+                drawdown = np.where(peak > 0, (peak - self.equity_curve) / peak * 100, 0)
+                max_drawdown = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
+                avg_drawdown = float(np.mean(drawdown)) if len(drawdown) > 0 else 0.0
             else:
-                stats_dict['Sharpe_Ratio'] = 0.0
+                max_drawdown = 0.0
+                avg_drawdown = 0.0
                 
-            # Sortino Ratio
-            downside_returns = np.clip(returns - risk_free_rate, a_min=None, a_max=0)
-            downside_volatility = np.std(downside_returns, ddof=0)
-            
-            if abs(downside_volatility) > self.EPS and abs(avg_return - risk_free_rate) > self.EPS:
-                stats_dict['Sortino_ratio'] = (avg_return - risk_free_rate) / downside_volatility
-            else:
-                stats_dict['Sortino_ratio'] = 0.0
-                
-            # Calmar Ratio
-            equity_curve = self.Trades['Balance'].values
-            returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0])
-            try:
-                compounded_growth = np.prod(1 + returns) ** (252 / len(returns)) - 1 if len(returns) > 0 else 0
-            except ZeroDivisionError:
-                compounded_growth = 0
-                
-            max_drawdown = abs(np.max(np.maximum.accumulate(equity_curve) - equity_curve)) if len(equity_curve) > 0 else 0
-            
-            if max_drawdown > self.EPS:
-                stats_dict['calmar_ratio'] = abs(compounded_growth) / max_drawdown
-            else:
-                stats_dict['calmar_ratio'] = 0.0
-                
-            # Convert to DataFrame
-            self.stats = pd.DataFrame([stats_dict]).transpose().reset_index()
-            self.stats.columns = ['Statistic', 'Value']
+            self.metrics.update({
+                'max_drawdown': max_drawdown,
+                'avg_drawdown': avg_drawdown
+            })
             
         except Exception as e:
-            logger.error(f"Error calculating strategy statistics: {str(e)}")
-            logger.error(f"Metrics DataFrame columns: {self.metrics.columns.tolist()}")
-            raise
+            logger.error(f"Error calculating drawdown metrics: {str(e)}")
 
-    def _interpret_trading_metrics(self) -> None:
-        """Interpret trading metrics and provide recommendations"""
-        # Define interpretation criteria
-        interpretation_criteria = {
-            'Ticker': lambda x: (x if x != '' else '', 'Symbol'),
-            'Win_Loss_Ratio': lambda x: ('Good' if x > 0.5 else 'Poor', 'A high Win/Loss Ratio indicates a favorable risk-reward balance.'),
-            'Win_Rate': lambda x: ('Good' if x > 50 else 'Poor', 'A high Win Rate suggests a high percentage of profitable trades.'),
-            'Profit_Factor': lambda x: ('Good' if x > 1.5 else 'Poor', 'A Profit Factor greater than 1.5 indicates profitable trading.'),
-            'Recovery_Factor': lambda x: ('Good' if x > 0.2 else 'Poor', 'A high Recovery Factor suggests effective recovery from drawdowns.'),
-            'AHPR': lambda x: ('Good' if x > 0 else 'Poor', 'A positive AHPR indicates positive average holding period returns.'),
-            'GHPR': lambda x: ('Good' if x > 0 else 'Poor', 'A positive GHPR indicates positive geometric holding period returns.'),
-            'Expected_Payoff': lambda x: ('Good' if x > 0 else 'Poor', 'A positive Expected Payoff indicates favorable risk-reward per trade.'),
-            'Sharpe_Ratio': lambda x: ('Good' if x > 1 else 'Poor', 'A Sharpe Ratio > 1 suggests good risk-adjusted returns.'),
-            'Sortino_ratio': lambda x: ('Good' if x > 1 else 'Poor', 'A Sortino Ratio > 1 indicates good downside risk-adjusted returns.'),
-            'calmar_ratio': lambda x: ('Good' if x > 0.5 else 'Poor', 'A Calmar Ratio > 0.5 indicates good drawdown-adjusted returns.')
+    def _calculate_risk_adjusted_returns(self) -> None:
+        """Calculate risk-adjusted return metrics"""
+        try:
+            if len(self.equity_curve) > 1:
+                # Calculate daily returns (log returns for better statistical properties)
+                daily_returns = np.diff(np.log(self.equity_curve)) * 100
+                
+                # Calculate annualized metrics
+                mean_return = np.mean(daily_returns) if len(daily_returns) > 0 else 0.0
+                std_return = np.std(daily_returns) if len(daily_returns) > 1 else 0.0
+                negative_returns = daily_returns[daily_returns < 0]
+                
+                # Calculate Sharpe ratio (annualized)
+                risk_free_rate = 0.02  # 2% risk-free rate
+                excess_returns = mean_return - (risk_free_rate / 252)  # Daily risk-free rate
+                sharpe = np.sqrt(252) * excess_returns / std_return if std_return > 0 else 0.0
+                
+                # Calculate Sortino ratio (annualized)
+                downside_deviation = np.sqrt(np.mean(negative_returns ** 2)) if len(negative_returns) > 0 else 0.0
+                sortino = np.sqrt(252) * excess_returns / downside_deviation if downside_deviation > 0 else 0.0
+                
+                # Calculate Calmar ratio
+                calmar = excess_returns * 252 / (self.metrics.get('max_drawdown', 0.0) / 100) if self.metrics.get('max_drawdown', 0.0) > 0 else 0.0
+            else:
+                sharpe = 0.0
+                sortino = 0.0
+                calmar = 0.0
+                
+            self.metrics.update({
+                'sharpe': sharpe,
+                'sortino': sortino,
+                'calmar': calmar
+            })
+            
+        except Exception as e:
+            logger.error(f"Error calculating risk-adjusted returns: {str(e)}")
+
+    def _calculate_cagr_and_calmar(self) -> None:
+        """Calculate CAGR and Calmar ratio"""
+        try:
+            if len(self.equity_curve) > 1:
+                initial_balance = float(self.equity_curve[0])
+                final_balance = float(self.equity_curve[-1])
+                trading_days = float(self.trades[-1]['Exit_Time'] - self.trades[0]['Entry_Time']) / (24 * 3600)
+                
+                if trading_days > 0 and initial_balance > 0:
+                    cagr = ((final_balance / initial_balance) ** (252 / trading_days) - 1) * 100
+                else:
+                    cagr = 0.0
+                    final_balance = self.initial_balance
+            else:
+                cagr = 0.0
+                final_balance = self.initial_balance
+                
+            # Calculate Calmar ratio
+            if self.metrics.get('max_drawdown', 0.0) > 0 and cagr > 0:
+                raw_calmar = cagr / self.metrics['max_drawdown']
+                calmar_ratio = min(raw_calmar, 100)  # Cap at 100
+            else:
+                calmar_ratio = 0.0
+                
+            self.metrics.update({
+                'cagr': cagr,
+                'calmar_ratio': calmar_ratio,
+                'final_balance': final_balance
+            })
+            
+        except Exception as e:
+            logger.error(f"Error calculating CAGR and Calmar: {str(e)}")
+
+    def _calculate_trade_statistics(self) -> None:
+        """Calculate trade statistics"""
+        try:
+            if not self.trades:
+                return
+                
+            # Calculate average trade duration
+            avg_trade_duration = np.mean([float(t.get('Duration', 0)) for t in self.trades]) if self.trades and 'Duration' in self.trades[0] else 0.0
+            
+            # Calculate net profit and commission
+            net_profit = sum(float(t['PnL']) for t in self.trades)
+            total_commission = sum(float(t['Commission']) for t in self.trades)
+            
+            self.metrics.update({
+                'avg_trade_duration': avg_trade_duration,
+                'net_profit': net_profit,
+                'total_commission': total_commission
+            })
+            
+            # Format statistics for display
+            self.statistics = {
+                'win_rate': f"{self.metrics.get('win_rate', 0.0):.2f}%",
+                'profit_factor': f"{self.metrics.get('profit_factor', 0.0):.2f}",
+                'sharpe_ratio': f"{self.metrics.get('sharpe', 0.0):.2f}",
+                'sortino_ratio': f"{self.metrics.get('sortino', 0.0):.2f}",
+                'calmar_ratio': f"{self.metrics.get('calmar', 0.0):.2f}",
+                'max_drawdown': f"{self.metrics.get('max_drawdown', 0.0):.2f}%",
+                'cagr': f"{self.metrics.get('cagr', 0.0):.2f}%",
+                'total_trades': str(self.metrics.get('total_trades', 0)),
+                'winning_trades': str(self.metrics.get('winning_trades', 0)),
+                'losing_trades': str(self.metrics.get('losing_trades', 0)),
+                'net_profit': f"${net_profit:.2f}",
+                'total_commission': f"${total_commission:.2f}",
+                'final_balance': f"${self.metrics.get('final_balance', self.initial_balance):.2f}",
+                'initial_balance': f"${self.initial_balance:.2f}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating trade statistics: {str(e)}")
+
+    def _set_empty_metrics(self) -> None:
+        """Set empty metrics when no trades are available"""
+        self.metrics = {
+            'win_rate': 0.0,
+            'profit_factor': 0.0,
+            'sharpe': 0.0,
+            'sortino': 0.0,
+            'calmar': 0.0,
+            'max_drawdown': 0.0,
+            'cagr': 0.0,
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'final_balance': self.initial_balance
         }
         
-        # Add interpretation columns
-        self.stats[['Interpretation', 'Detailed_Insights']] = self.stats.apply(
-            lambda row: interpretation_criteria[row['Statistic']](row['Value']), 
-            axis=1, 
-            result_type='expand'
-        )
+        self.statistics = {
+            'win_rate': '0.00%',
+            'profit_factor': '0.00',
+            'sharpe_ratio': '0.00',
+            'sortino_ratio': '0.00',
+            'calmar_ratio': '0.00',
+            'max_drawdown': '0.00%',
+            'cagr': '0.00%',
+            'total_trades': '0',
+            'winning_trades': '0',
+            'losing_trades': '0',
+            'net_profit': '$0.00',
+            'total_commission': '$0.00',
+            'final_balance': f"${self.initial_balance:.2f}",
+            'initial_balance': f"${self.initial_balance:.2f}"
+        }
+        self.recommendation = "No trades available for evaluation"
+
+    def _generate_recommendation(self) -> str:
+        """Generate strategy recommendation based on metrics"""
+        if self.metrics['total_trades'] < 30:
+            return "Insufficient trades for reliable evaluation"
+            
+        recommendations = []
         
-        # Calculate weighted score
-        important_metrics = ['Win_Rate', 'Profit_Factor', 'Sharpe_Ratio', 'Sortino_ratio']
-        weights = {'Win_Rate': 0.3, 'Profit_Factor': 0.3, 'Sharpe_Ratio': 0.2, 'Sortino_ratio': 0.2}
+        # Win rate analysis
+        if self.metrics['win_rate'] >= 60:
+            recommendations.append("Strong win rate")
+        elif self.metrics['win_rate'] >= 50:
+            recommendations.append("Moderate win rate")
+        else:
+            recommendations.append("Low win rate")
+            
+        # Profit factor analysis
+        if self.metrics['profit_factor'] >= 2:
+            recommendations.append("Excellent profit factor")
+        elif self.metrics['profit_factor'] >= 1.5:
+            recommendations.append("Good profit factor")
+        else:
+            recommendations.append("Poor profit factor")
+            
+        # Risk-adjusted returns
+        sharpe = self.metrics.get('sharpe', 0.0)
+        if sharpe >= 2:
+            recommendations.append("Excellent risk-adjusted returns")
+        elif sharpe >= 1:
+            recommendations.append("Good risk-adjusted returns")
+        else:
+            recommendations.append("Poor risk-adjusted returns")
+            
+        # Drawdown analysis
+        if self.metrics['max_drawdown'] <= 10:
+            recommendations.append("Excellent drawdown control")
+        elif self.metrics['max_drawdown'] <= 20:
+            recommendations.append("Good drawdown control")
+        else:
+            recommendations.append("Poor drawdown control")
+            
+        # Overall recommendation
+        if (self.metrics['win_rate'] >= 50 and 
+            self.metrics['profit_factor'] >= 1.5 and 
+            sharpe >= 1 and 
+            self.metrics['max_drawdown'] <= 20):
+            return f"STRONG BUY: {'; '.join(recommendations)}"
+        elif (self.metrics['win_rate'] >= 45 and 
+              self.metrics['profit_factor'] >= 1.2 and 
+              sharpe >= 0.8 and 
+              self.metrics['max_drawdown'] <= 25):
+            return f"BUY: {'; '.join(recommendations)}"
+        else:
+            return f"NEUTRAL: {'; '.join(recommendations)}"
+    
+    def get_metrics(self) -> Dict:
+        """Get calculated metrics"""
+        return self.metrics
+
+    def get_statistics(self) -> Dict:
+        """Get formatted statistics"""
+        return self.statistics
+
+    def get_recommendation(self) -> str:
+        """Get strategy recommendation"""
+        return self.recommendation
+    
+    def save_results(self, filepath: str) -> None:
+        """Save evaluation results to JSON file"""
+        results = {
+            'ticker': self.ticker,
+            'metrics': self.metrics,
+            'statistics': self.statistics,
+            'recommendation': self.recommendation,
+            'timestamp': datetime.now().isoformat()
+        }
         
-        weighted_score = 0
-        for metric in important_metrics:
-            if metric in self.stats['Statistic'].values:
-                interpretation = self.stats.loc[self.stats['Statistic'] == metric, 'Interpretation'].values[0]
-                weighted_score += weights[metric] * (1 if interpretation == 'Good' else 0)
-                
-        # Set final recommendation
-        self.Final_Recommendation = 'Consider for Trading' if weighted_score >= 0.6 else 'Do Not Consider for Trading' 
+        with open(filepath, 'w') as f:
+            json.dump(results, f, indent=4) 

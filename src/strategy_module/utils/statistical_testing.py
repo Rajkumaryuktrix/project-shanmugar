@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import logging
 import os
 from datetime import datetime
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -151,29 +152,22 @@ class AdvancedStatisticalTesting:
         auto_corr = auto_corr[len(auto_corr)//2:]
         cross_corr = cross_corr[len(cross_corr)//2:]
         
-        # Create plots directory if it doesn't exist
-        plots_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'plots')
+        # Save plot data to file instead of plotting
+        plots_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'results', 'plots')
         os.makedirs(plots_dir, exist_ok=True)
-        
-        # Plot results
-        plt.figure(figsize=(12, 6))
-        
-        plt.subplot(2, 1, 1)
-        plt.plot(auto_corr[:max_lag + 1], marker='o')
-        plt.title('Auto-correlation')
-        
-        plt.subplot(2, 1, 2)
-        plt.plot(cross_corr[:max_lag + 1], marker='o')
-        plt.title('Cross-correlation')
-        
-        plt.tight_layout()
-        
-        # Save plot to file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        plot_file = os.path.join(plots_dir, f'correlations_{timestamp}.png')
-        plt.savefig(plot_file)
-        plt.close()
-        
+        plot_file = os.path.join(plots_dir, f'correlations_{timestamp}.json')
+        plot_data = {
+            "title": "Correlation Analysis",
+            "series": [
+                {"label": "Auto-correlation", "x": list(range(max_lag+1)), "y": auto_corr[:max_lag+1].tolist()},
+                {"label": "Cross-correlation", "x": list(range(max_lag+1)), "y": cross_corr[:max_lag+1].tolist()}
+            ],
+            "xlabel": "Lag",
+            "ylabel": "Correlation"
+        }
+        with open(plot_file, 'w') as f:
+            json.dump(plot_data, f, indent=4)
         return auto_corr, cross_corr
 
     def hurst_exponent(self, ts: np.ndarray) -> float:
@@ -204,18 +198,20 @@ class AdvancedStatisticalTesting:
         else:
             logger.info("The series exhibits a random walk behavior (Hurst exponent = 0.5).")
             
-        # Plot results
-        plt.figure(figsize=(12, 6))
-        
-        plt.subplot(2, 1, 1)
-        plt.plot(ts)
-        plt.title('Time Series')
-        
-        plt.subplot(2, 1, 2)
-        plt.plot(np.log(lags), np.log(tau), marker='o')
-        plt.title('Log-Log Plot for Hurst Exponent Calculation')
-        
-        plt.tight_layout()
-        plt.show()
-        
+        # Save plot data to file instead of plotting
+        plots_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'results', 'plots')
+        os.makedirs(plots_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        plot_file = os.path.join(plots_dir, f'hurst_{timestamp}.json')
+        plot_data = {
+            "title": "Hurst Exponent Calculation",
+            "series": [
+                {"label": "Time Series", "x": list(range(len(ts))), "y": ts.tolist()},
+                {"label": "Log-Log Plot", "x": np.log(list(range(2, 20))).tolist(), "y": np.log(tau).tolist()}
+            ],
+            "xlabel": "Index",
+            "ylabel": "Value"
+        }
+        with open(plot_file, 'w') as f:
+            json.dump(plot_data, f, indent=4)
         return hurst_exponent 

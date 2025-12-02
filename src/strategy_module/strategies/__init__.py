@@ -2,7 +2,8 @@
 Strategies package for trading algorithms.
 """
 
-from .moving_average_strategy import MovingAverageCrossoverStrategy
 from .rsi_strategy import RSIStrategy
+from .moving_average_strategy import MovingAverageStrategy
+from .time_based_strategy import TimeBasedStrategy
 
-__all__ = ['MovingAverageCrossoverStrategy', 'RSIStrategy'] 
+__all__ = ['RSIStrategy', 'MovingAverageStrategy', 'TimeBasedStrategy'] 
